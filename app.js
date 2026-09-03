@@ -7,6 +7,7 @@ import { calculateDividendReceipts, calculateStockDividendChecks, quantityAtDate
 import { checkedThrough, createMarketSyncPlan, dateMin, dividendKey, firstMarketDate, lastMarketDate, mergeRows } from './js/domain/market.js';
 import { validateBackupPayload } from './js/domain/backup.js';
 import { isIsoCalendarDate, planCsvTransactionImport } from './js/domain/transaction-import.js';
+import { mergeStockCatalogs, normaliseStockCatalog, resolveStockQuery, searchStockCatalog } from './js/domain/stock-catalog.js';
 import { budgetItemRepository, budgetPlanRepository, marketCacheRepository, replaceBrowserData, settingsRepository, transactionRepository } from './js/repositories/browser.js';
 import { fetchFinMindData } from './js/services/finmind.js';
 import { confirmDestructive } from './js/components/confirmation.js';
@@ -17,7 +18,52 @@ let transactions = [], marketCaches = [], budgetPlans = [], budgetItems = [], sy
 let trendState = { frequency: 'month', range: 'all', start: null, end: null }, trendDetailDate = null;
 let budgetEditId = null, budgetEditorOpen = false, budgetDraft = null, budgetUndoItem = null, budgetUndoTimer = null, transactionEditId = null, transactionUndoRows = [], transactionUndoTimer = null, aiImportGuideOpen = false;
 let onboardingCompletionNoticeVisible = false;
+const STOCK_CATALOG_CACHE_KEY = 'stock-journey-stock-catalog-v1';
+const STOCK_CATALOG_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+let stockCatalog = [], stockCatalogStatus = 'idle', stockCatalogError = '', stockCatalogRequest = null, activeStockSuggestion = -1;
 const root = document.querySelector('#root');
+
+function knownStockCatalog() {
+  const cached = marketCaches.filter(row => row.name).map(row => ({symbol:row.symbol,name:row.name,type:row.securityType}));
+  return mergeStockCatalogs(cached);
+}
+function readStockCatalogCache() {
+  try {
+    const cached=JSON.parse(globalThis.localStorage?.getItem(STOCK_CATALOG_CACHE_KEY)||'null');
+    if (!cached?.savedAt || Date.now()-new Date(cached.savedAt).getTime()>STOCK_CATALOG_MAX_AGE_MS) return [];
+    return normaliseStockCatalog(cached.rows);
+  } catch { return []; }
+}
+function saveStockCatalogCache(rows) {
+  try { globalThis.localStorage?.setItem(STOCK_CATALOG_CACHE_KEY,JSON.stringify({savedAt:new Date().toISOString(),rows})); } catch {}
+}
+function setStockCatalog(rows, persist = true) {
+  stockCatalog=mergeStockCatalogs(rows,knownStockCatalog());
+  if (persist && stockCatalog.length) saveStockCatalogCache(stockCatalog);
+  return stockCatalog;
+}
+async function ensureStockCatalog() {
+  if (stockCatalogStatus==='ready') return stockCatalog;
+  if (stockCatalogRequest) return stockCatalogRequest;
+  if (!stockCatalog.length) setStockCatalog(readStockCatalogCache(),false);
+  if (stockCatalog.length) stockCatalogStatus='ready';
+  else stockCatalogStatus='loading';
+  refreshStockCombobox();
+  stockCatalogRequest=(async()=>{
+    try {
+      const rows=await fetchFinMindData('TaiwanStockInfo');
+      setStockCatalog(rows);
+      stockCatalogStatus='ready';stockCatalogError='';
+    } catch (error) {
+      stockCatalogStatus=stockCatalog.length?'ready':'error';stockCatalogError=error.message||'股票清單載入失敗';
+    } finally {
+      stockCatalogRequest=null;
+      if (transactionModalOpen) refreshStockCombobox();
+    }
+    return stockCatalog;
+  })();
+  return stockCatalogRequest;
+}
 function marketTargetDate(now = new Date(), tradingDates = marketTradingDates) { return resolveMarketTargetDate(now, tradingDates); }
 function canonicaliseRoute() {
   page = pageFromHash(globalThis.location?.hash);
@@ -70,6 +116,7 @@ async function load({ announceOnboardingCompletion = false } = {}) {
     ]);
     transactions = savedTransactions;
     marketCaches = savedMarketCaches;
+    stockCatalog = mergeStockCatalogs(stockCatalog, knownStockCatalog());
     budgetPlans = savedBudgetPlans;
     budgetItems = savedBudgetItems;
     if (savedSettings) settings = { ...settings, ...savedSettings, id:savedSettings.id || 'default', monthlyExpenseTarget:savedSettings.monthlyExpenseTarget ?? 0, dividendDateBasis:savedSettings.dividendDateBasis || 'PAYMENT_DATE', trendTooltipEventLimit:normaliseTrendTooltipEventLimit(savedSettings.trendTooltipEventLimit), lastSuccessfulMarketSyncDate:savedSettings.lastSuccessfulMarketSyncDate || null, lastMarketSyncAttemptDate:savedSettings.lastMarketSyncAttemptDate || null, marketAutoSyncPausedUntil:savedSettings.marketAutoSyncPausedUntil || null };
@@ -188,7 +235,7 @@ async function syncMarket(options = {}) {
   try {
     let infoRows = [];
     if (symbols.some(symbol => !cacheFor(symbol)?.name)) {
-      try { infoRows = await fetchFinMindData('TaiwanStockInfo'); }
+      try { infoRows = await fetchFinMindData('TaiwanStockInfo'); setStockCatalog(infoRows); stockCatalogStatus='ready'; }
       catch (error) { console.warn('Stock info sync failed:', error.message); }
     }
     const infoBySymbol = new Map(infoRows.map(row => [String(row.stock_id), row]));
@@ -595,7 +642,7 @@ function transactionsPage() {
 function transactionModal() {
   if (!transactionModalOpen) return '';
   const transaction=transactions.find(row=>row.id===transactionEditId),isEditing=Boolean(transaction),selectedType=transaction?.acquisitionType||'MANUAL_BUY';
-  return `<div class="modal-backdrop" id="transactionModalBackdrop"><section class="transaction-modal" role="dialog" aria-modal="true" aria-labelledby="transactionModalTitle"><div class="modal-header"><div><p class="eyebrow">${isEditing?'編輯紀錄':'手動新增'}</p><h2 id="transactionModalTitle">${isEditing?'編輯交易紀錄':'新增交易紀錄'}</h2></div><button class="modal-close" id="closeTransactionModal" aria-label="關閉">×</button></div><form id="transactionForm" novalidate><div class="form-error" id="transactionFormError" role="alert" tabindex="-1" hidden></div><div class="transaction-form-grid"><label>交易日期<input id="transactionDate" name="date" type="date" value="${escapeHtml(transaction?.date||today())}" required /></label><label>股票代號<input id="transactionSymbol" name="symbol" inputmode="numeric" placeholder="例如：00878" maxlength="12" value="${escapeHtml(transaction?.symbol||'')}" required autofocus /></label><label>取得方式<select name="acquisitionType" id="transactionType">${Object.entries(ACQUISITIONS).map(([key,label])=>`<option value="${key}" ${key===selectedType?'selected':''}>${label}</option>`).join('')}</select></label><label>股數<input id="transactionQuantity" name="quantity" type="number" min="0.0001" step="any" placeholder="例如：1000" value="${transaction?.quantity??''}" required /></label><label>成交價（元／股）<input name="price" id="transactionPrice" type="number" min="0" step="any" placeholder="例如：20.50" value="${transaction?.price??''}" required /></label><label>手續費（元）<input id="transactionFee" name="fee" type="number" min="0" step="any" value="${transaction?.fee??0}" required /></label></div><p class="form-hint" id="transactionFormHint">成本會以「股數 × 成交價 ＋ 手續費」計算。</p><div class="modal-actions"><button type="button" class="secondary" id="cancelTransaction">取消</button><button type="submit" class="primary" id="saveTransaction">${isEditing?'儲存變更':'儲存交易'}</button></div></form></section></div>`;
+  return `<div class="modal-backdrop" id="transactionModalBackdrop"><section class="transaction-modal" role="dialog" aria-modal="true" aria-labelledby="transactionModalTitle"><div class="modal-header"><div><p class="eyebrow">${isEditing?'編輯紀錄':'手動新增'}</p><h2 id="transactionModalTitle">${isEditing?'編輯交易紀錄':'新增交易紀錄'}</h2></div><button class="modal-close" id="closeTransactionModal" aria-label="關閉">×</button></div><form id="transactionForm" novalidate><div class="form-error" id="transactionFormError" role="alert" tabindex="-1" hidden></div><div class="transaction-form-grid"><label>交易日期<input id="transactionDate" name="date" type="date" value="${escapeHtml(transaction?.date||today())}" required /></label><div class="transaction-field stock-combobox-field"><label for="transactionSymbol">股票代號或名稱</label><div class="stock-combobox"><input id="transactionSymbol" name="symbol" type="text" autocomplete="off" placeholder="例如：0050 或 元大台灣50" maxlength="30" value="${escapeHtml(transaction?.symbol||'')}" role="combobox" aria-autocomplete="list" aria-controls="transactionStockSuggestions" aria-expanded="false" aria-describedby="transactionStockHelp" required autofocus /><div class="stock-suggestions" id="transactionStockSuggestions" role="listbox" aria-label="符合的台灣股票" hidden></div></div><small id="transactionStockHelp" class="field-help">可輸入中文名稱或股票代號搜尋。</small></div><label>取得方式<select name="acquisitionType" id="transactionType">${Object.entries(ACQUISITIONS).map(([key,label])=>`<option value="${key}" ${key===selectedType?'selected':''}>${label}</option>`).join('')}</select></label><label>股數<input id="transactionQuantity" name="quantity" type="number" min="0.0001" step="any" placeholder="例如：1000" value="${transaction?.quantity??''}" required /></label><label>成交價（元／股）<input name="price" id="transactionPrice" type="number" min="0" step="any" placeholder="例如：20.50" value="${transaction?.price??''}" required /></label><label>手續費（元）<input id="transactionFee" name="fee" type="number" min="0" step="any" value="${transaction?.fee??0}" required /></label></div><p class="form-hint" id="transactionFormHint">成本會以「股數 × 成交價 ＋ 手續費」計算。</p><div class="modal-actions"><button type="button" class="secondary" id="cancelTransaction">取消</button><button type="submit" class="primary" id="saveTransaction">${isEditing?'儲存變更':'儲存交易'}</button></div></form></section></div>`;
 }
 function aiImportPrompt() {
   return `請將我提供的台灣股票交易資料整理為可匯入的 CSV。\n\n請只輸出 CSV 純文字，不要 Markdown、說明或程式碼區塊。第一列欄位必須完全是：\ndate,acquisition_type,symbol,quantity,price,fee\n\n整理規則：\n1. 日期使用 YYYY-MM-DD；原始資料缺少完整日期時，不要猜測。\n2. acquisition_type 只能使用：MANUAL_BUY、RECURRING_INVESTMENT、DIVIDEND_REINVESTMENT、STOCK_DIVIDEND。\n3. 只保留買進、定期定額、股息再投入與配股；賣出、轉出、借券等不支援紀錄請排除。\n4. symbol 保留台股股票代號，例如 00878、2330，不要轉成數字格式或補小數點。\n5. quantity 為正數股數；price 是每股成交價。配股（STOCK_DIVIDEND）的 price 留空。\n6. fee 為手續費；原始資料沒有時填 0。\n7. 無法確認欄位時不要臆測，該筆紀錄請排除。\n\n以下是我的原始資料：\n`;
@@ -862,7 +909,7 @@ function bind() {
   document.querySelector('#transactionType')?.addEventListener('change', updateTransactionPriceField);
   document.querySelectorAll('#transactionForm input').forEach(input=>input.addEventListener('input',()=>input.removeAttribute('aria-invalid')));
   document.querySelector('#transactionForm')?.addEventListener('submit', saveManualTransaction);
-  if (transactionModalOpen) updateTransactionPriceField();
+  if (transactionModalOpen) { updateTransactionPriceField(); bindStockCombobox(); void ensureStockCatalog(); }
   document.querySelectorAll('.delete').forEach(x => x.onclick = async() => {
     const transaction = transactions.find(row => row.id === x.dataset.id);
     if (!transaction || !await confirmDestructive({title:'刪除這筆交易紀錄？',description:'這筆交易會從持股成本與退休試算中移除。',details:['刪除後可在 10 秒內復原。'],confirmLabel:'刪除交易'})) return;
@@ -931,6 +978,65 @@ async function importCsv(file) {
 }
 function openTransactionModal(id = null) { transactionEditId = typeof id==='string' ? id : null; transactionModalOpen = true; render(); }
 function closeTransactionModal() { transactionEditId = null; transactionModalOpen = false; render(); }
+function stockSuggestionRows(query) { return searchStockCatalog(stockCatalog,query,8); }
+function stockTypeLabel(type) { return ({twse:'上市',tpex:'上櫃',emerging:'興櫃'})[String(type||'').toLowerCase()] || type || ''; }
+function refreshStockCombobox() {
+  const input=document.querySelector('#transactionSymbol');
+  updateStockCombobox(input?.value||'',input?.getAttribute('aria-expanded')==='true');
+}
+function setActiveStockSuggestion(index) {
+  const input=document.querySelector('#transactionSymbol'), options=[...document.querySelectorAll('[data-stock-suggestion]')];
+  if (!input || !options.length) { activeStockSuggestion=-1;input?.removeAttribute('aria-activedescendant');return; }
+  activeStockSuggestion=Math.max(0,Math.min(index,options.length-1));
+  options.forEach((option,optionIndex)=>{const active=optionIndex===activeStockSuggestion;option.classList.toggle('is-active',active);option.setAttribute('aria-selected',String(active));});
+  const active=options[activeStockSuggestion];input.setAttribute('aria-activedescendant',active.id);active.scrollIntoView?.({block:'nearest'});
+}
+function closeStockSuggestions() {
+  const input=document.querySelector('#transactionSymbol'),list=document.querySelector('#transactionStockSuggestions');
+  if (list) list.hidden=true;if(input){input.setAttribute('aria-expanded','false');input.removeAttribute('aria-activedescendant');}activeStockSuggestion=-1;
+}
+function chooseStockSuggestion(stock) {
+  const input=document.querySelector('#transactionSymbol'),help=document.querySelector('#transactionStockHelp');
+  if (!input || !stock) return;input.value=stock.symbol;input.removeAttribute('aria-invalid');
+  if (help) help.textContent=`已選擇 ${stock.name}（${stock.symbol}）`;
+  closeStockSuggestions();input.focus();
+}
+function updateStockCombobox(query, open = false) {
+  const input=document.querySelector('#transactionSymbol'),list=document.querySelector('#transactionStockSuggestions'),help=document.querySelector('#transactionStockHelp');
+  if (!input || !list) return;
+  const value=String(query||'').trim(), rows=stockSuggestionRows(value);activeStockSuggestion=-1;
+  if (!value) {
+    list.hidden=true;input.setAttribute('aria-expanded','false');
+    if(help)help.textContent=stockCatalogStatus==='loading'?'正在載入台股代號與名稱…':'可輸入中文名稱或股票代號搜尋。';
+    return;
+  }
+  if (rows.length) {
+    list.innerHTML=rows.map((stock,index)=>`<button type="button" role="option" tabindex="-1" id="transactionStockOption${index}" data-stock-suggestion="${index}" aria-selected="false"><b>${escapeHtml(stock.symbol)}</b><span>${escapeHtml(stock.name)}</span>${stock.type?`<small>${escapeHtml(stockTypeLabel(stock.type))}</small>`:''}</button>`).join('');
+    if(help)help.textContent=stockCatalogStatus==='loading'?`先顯示已快取結果；完整清單載入中…`:`找到 ${rows.length} 筆最相關結果。`;
+  } else {
+    const message=stockCatalogStatus==='loading'?'正在載入完整股票清單…':stockCatalogStatus==='error'?'完整清單暫時無法載入；你仍可直接輸入股票代號。':'找不到符合的股票；可換個名稱或直接輸入代號。';
+    list.innerHTML=`<div class="stock-suggestion-status" role="option" aria-disabled="true">${escapeHtml(message)}</div>`;
+    if(help)help.textContent=stockCatalogError&&stockCatalogStatus==='error'?'股票清單連線失敗，仍可直接輸入代號。':message;
+  }
+  list.hidden=!open;input.setAttribute('aria-expanded',String(open));
+  list.querySelectorAll('[data-stock-suggestion]').forEach((option,index)=>{
+    option.addEventListener('mousedown',event=>event.preventDefault());
+    option.addEventListener('click',()=>chooseStockSuggestion(rows[index]));
+  });
+}
+function bindStockCombobox() {
+  const input=document.querySelector('#transactionSymbol');if(!input)return;
+  input.addEventListener('input',()=>updateStockCombobox(input.value,true));
+  input.addEventListener('focus',()=>updateStockCombobox(input.value,true));
+  input.addEventListener('keydown',event=>{
+    const options=[...document.querySelectorAll('[data-stock-suggestion]')];
+    if (event.key==='ArrowDown'&&options.length) { event.preventDefault();setActiveStockSuggestion(activeStockSuggestion+1); }
+    else if (event.key==='ArrowUp'&&options.length) { event.preventDefault();setActiveStockSuggestion(activeStockSuggestion<0?options.length-1:activeStockSuggestion-1); }
+    else if (event.key==='Enter'&&activeStockSuggestion>=0) { event.preventDefault();const stock=stockSuggestionRows(input.value)[activeStockSuggestion];chooseStockSuggestion(stock); }
+    else if (event.key==='Escape'&&!document.querySelector('#transactionStockSuggestions')?.hidden) { event.preventDefault();closeStockSuggestions(); }
+  });
+  input.addEventListener('blur',()=>setTimeout(closeStockSuggestions,120));
+}
 function updateTransactionPriceField() {
   const type = document.querySelector('#transactionType')?.value;
   const price = document.querySelector('#transactionPrice');
@@ -947,12 +1053,14 @@ async function saveManualTransaction(event) {
   event.preventDefault();
   const data = new FormData(event.currentTarget);
   const date = String(data.get('date') || '');
-  const symbol = String(data.get('symbol') || '').trim();
+  const symbolQuery = String(data.get('symbol') || '').trim();
+  const stock = resolveStockQuery(stockCatalog,symbolQuery);
+  const symbol = (stock?.symbol || symbolQuery).toUpperCase();
   const acquisitionType = String(data.get('acquisitionType') || '');
   const quantity = Number(data.get('quantity'));
   const price = acquisitionType === 'STOCK_DIVIDEND' ? null : Number(data.get('price'));
   const fee = Number(data.get('fee'));
-  const error = !isIsoCalendarDate(date) ? ['請填寫有效的交易日期。','transactionDate'] : !/^[A-Za-z0-9._-]{1,12}$/.test(symbol) ? ['股票代號只能包含英數字、句點、底線或連字號。','transactionSymbol'] : !ACQUISITIONS[acquisitionType] ? ['請選擇有效的取得方式。','transactionType'] : !(Number.isFinite(quantity) && quantity > 0) ? ['股數必須是大於 0 的有限數字。','transactionQuantity'] : acquisitionType !== 'STOCK_DIVIDEND' && !(Number.isFinite(price) && price > 0) ? ['成交價必須是大於 0 的有限數字。','transactionPrice'] : !(Number.isFinite(fee) && fee >= 0) ? ['手續費不得小於 0。','transactionFee'] : null;
+  const error = !isIsoCalendarDate(date) ? ['請填寫有效的交易日期。','transactionDate'] : !/^[A-Za-z0-9._-]{1,12}$/.test(symbol) ? ['請從搜尋結果選擇股票，或輸入有效的股票代號。','transactionSymbol'] : !ACQUISITIONS[acquisitionType] ? ['請選擇有效的取得方式。','transactionType'] : !(Number.isFinite(quantity) && quantity > 0) ? ['股數必須是大於 0 的有限數字。','transactionQuantity'] : acquisitionType !== 'STOCK_DIVIDEND' && !(Number.isFinite(price) && price > 0) ? ['成交價必須是大於 0 的有限數字。','transactionPrice'] : !(Number.isFinite(fee) && fee >= 0) ? ['手續費不得小於 0。','transactionFee'] : null;
   if (error) return transactionFormError(...error);
   const existing=transactions.find(row=>row.id===transactionEditId),record={ id:existing?.id||uid(), date, symbol, quantity, price, fee, acquisitionType, importBatchId:existing?.importBatchId??null, importFileFingerprint:existing?.importFileFingerprint??null, sourceRowNumber:existing?.sourceRowNumber??null, createdAt:existing?.createdAt||new Date().toISOString() };
   await transactionRepository.save(record);

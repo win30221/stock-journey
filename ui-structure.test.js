@@ -13,6 +13,24 @@ test('settings and transaction actions avoid legacy string slicing and duplicate
   assert.doesNotMatch(source, /applyBudgetTarget/);
 });
 
+test('manual transaction stock field supports accessible Chinese autocomplete', () => {
+  const source = fs.readFileSync('app.js', 'utf8');
+  const styles = fs.readFileSync('styles.css', 'utf8');
+
+  assert.match(source, /股票代號或名稱/);
+  assert.match(source, /id="transactionSymbol"[^>]+placeholder="例如：0050 或 元大台灣50"[^>]+value="\$\{escapeHtml\(transaction\?\.symbol\|\|''\)\}"/, 'stock symbol should stay empty and show both a symbol and Chinese name as hints');
+  assert.doesNotMatch(source, /placeholder="例如：00878/);
+  assert.match(source, /role="combobox"[^>]+aria-autocomplete="list"[^>]+aria-controls="transactionStockSuggestions"/);
+  assert.match(source, /id="transactionStockSuggestions" role="listbox"/);
+  assert.match(source, /fetchFinMindData\('TaiwanStockInfo'\)/);
+  assert.match(source, /event\.key==='ArrowDown'/);
+  assert.match(source, /resolveStockQuery\(stockCatalog,symbolQuery\)/);
+  assert.match(styles, /\.stock-suggestions\s*\{/);
+  assert.match(styles, /\.stock-suggestions button\s*\{[^}]*min-height:\s*44px/);
+  assert.match(styles, /\.transaction-form-grid > label, \.transaction-form-grid > \.transaction-field\s*\{[^}]*align-self:\s*start/, 'desktop form fields should align to the top of each grid row');
+  assert.match(styles, /\.transaction-field\s*\{[^}]*font-size:\s*\.72rem[^}]*font-weight:\s*700/, 'autocomplete field should inherit the same typography as the other form controls');
+});
+
 test('transaction holdings show unrealized amount together with return percentage', () => {
   const source = fs.readFileSync('app.js', 'utf8');
 

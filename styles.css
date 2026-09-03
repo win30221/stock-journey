@@ -701,10 +701,23 @@ td small { display: block; margin-top: 2px; color: var(--subtle); font-size: .61
 .modal-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 21px; }
 .modal-close { width: 36px; height: 36px; color: #526177; background: var(--blue-soft); border: 0; border-radius: 9px; font-size: 1.4rem; line-height: 1; }
 .transaction-form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; }
-.transaction-form-grid label, .setting label { display: grid; gap: 7px; color: #526177; font-size: .72rem; font-weight: 700; }
+.transaction-form-grid > label, .transaction-form-grid > .transaction-field { align-self: start; }
+.transaction-form-grid label, .transaction-field > label, .setting label { display: grid; gap: 7px; color: #526177; font-size: .72rem; font-weight: 700; }
+.transaction-field { display: grid; gap: 7px; min-width: 0; color: #526177; font-size: .72rem; font-weight: 700; }
 .transaction-form-grid input, .transaction-form-grid select { width: 100%; }
 .transaction-form-grid input:disabled { color: var(--subtle); background: #f3f6fb; }
 .transaction-form-grid [aria-invalid="true"] { border-color: #b42318; box-shadow: 0 0 0 3px #fef3f2; }
+.stock-combobox { position: relative; }
+.stock-suggestions { position: absolute; z-index: 12; top: calc(100% + 5px); right: 0; left: 0; max-height: 260px; overflow-y: auto; padding: 5px; background: #fff; border: 1px solid #b9cbea; border-radius: 10px; box-shadow: 0 14px 32px #172a4a2e; }
+.stock-suggestions[hidden] { display: none; }
+.stock-suggestions button { display: grid; grid-template-columns: minmax(54px,auto) minmax(0,1fr) auto; align-items: center; gap: 9px; width: 100%; min-height: 44px; padding: 8px 9px; color: var(--ink); background: transparent; border: 0; border-radius: 7px; text-align: left; }
+.stock-suggestions button:hover, .stock-suggestions button.is-active { background: var(--blue-soft); }
+.stock-suggestions button:focus-visible { outline: 2px solid var(--blue); outline-offset: -2px; }
+.stock-suggestions b { color: var(--blue-strong); font-size: .76rem; font-variant-numeric: tabular-nums; }
+.stock-suggestions span { overflow: hidden; font-size: .75rem; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
+.stock-suggestions small { padding: 2px 5px; color: var(--muted); background: #f3f6fb; border-radius: 5px; font-size: .56rem; font-weight: 650; }
+.stock-suggestion-status { padding: 11px 9px; color: var(--muted); font-size: .69rem; font-weight: 650; line-height: 1.5; }
+.field-help { color: var(--muted); font-size: .62rem; font-weight: 500; line-height: 1.4; }
 .form-error { margin-bottom: 16px; padding: 11px 13px; color: #8f2418; background: #fef3f2; border: 1px solid #fecdca; border-radius: 9px; font-size: .75rem; font-weight: 700; line-height: 1.5; }
 .form-error[hidden] { display: none; }
 .form-hint { margin: 16px 0; color: var(--muted); font-size: .71rem; }

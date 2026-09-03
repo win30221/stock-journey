@@ -15,6 +15,7 @@ const sourceFiles = [
   'js/domain/market.js',
   'js/domain/backup.js',
   'js/domain/transaction-import.js',
+  'js/domain/stock-catalog.js',
   'js/repositories/browser.js',
   'js/services/finmind.js',
   'js/components/confirmation.js',
