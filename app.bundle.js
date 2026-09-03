@@ -690,6 +690,7 @@ function hashForPage(page) {
 let transactions = [], marketCaches = [], budgetPlans = [], budgetItems = [], syncProgress = '', settings = { id: 'default', monthlyExpenseTarget: 0, dividendDateBasis: 'PAYMENT_DATE', trendTooltipEventLimit: 3, showTotalAsset: true, showTotalReturn: true, gainMilestoneInterval: 1000000, showNewStockMarker: true, showManualBuyMarker: true, showRecurringInvestmentMarker: true, showDividendReinvestmentMarker: true, showStockDividendMarker: true, lastSuccessfulMarketSyncDate: null, lastMarketSyncAttemptDate: null, marketAutoSyncPausedUntil: null }, page = pageFromHash(globalThis.location?.hash), transactionModalOpen = false, dividendYear = null, marketSymbol = null, marketPriceMonth = null, autoSyncInProgress = false, marketSyncInProgress = false, marketSyncTimer = null, marketTradingDates = [], marketCalendarLoaded = false, marketCalendarRetryAfter = null;
 let trendState = { frequency: 'month', range: 'all', start: null, end: null }, trendDetailDate = null;
 let budgetEditId = null, budgetEditorOpen = false, budgetDraft = null, budgetUndoItem = null, budgetUndoTimer = null, transactionEditId = null, transactionUndoRows = [], transactionUndoTimer = null, aiImportGuideOpen = false;
+let onboardingCompletionNoticeVisible = false;
 const root = document.querySelector('#root');
 function marketTargetDate(now = new Date(), tradingDates = marketTradingDates) { return resolveMarketTargetDate(now, tradingDates); }
 function canonicaliseRoute() {
@@ -707,6 +708,7 @@ function renderPageAtTop() {
   document.querySelector('#main-content')?.focus({ preventScroll:true });
 }
 function navigateToPage(nextPage) {
+  onboardingCompletionNoticeVisible = false;
   const nextHash = hashForPage(nextPage);
   page = pageFromHash(nextHash);
   if (globalThis.location?.hash !== nextHash) globalThis.location.hash = nextHash;
@@ -722,6 +724,7 @@ function syncPageFromHash() {
     } catch { globalThis.location.hash = canonicalHash; }
   }
   if (page === nextPage) return;
+  onboardingCompletionNoticeVisible = false;
   page = nextPage;
   renderPageAtTop();
 }
@@ -733,8 +736,9 @@ const PAGE_LABELS = {
   'market-data': '市場資料',
   settings: '設定',
 };
-async function load() {
+async function load({ announceOnboardingCompletion = false } = {}) {
   try {
+    const wasOnboardingComplete = getOnboardingState().isComplete;
     const [savedTransactions, savedMarketCaches, savedSettings, savedBudgetPlans, savedBudgetItems] = await Promise.all([
       transactionRepository.list(), marketCacheRepository.list(), settingsRepository.first(), budgetPlanRepository.list(), budgetItemRepository.list(),
     ]);
@@ -753,9 +757,14 @@ async function load() {
     const plan = budgetPlans[0];
     if (!plan) await seedBudgetPlan();
     else if (plan.source === 'LEGACY_MONTHLY_TARGET') { const migrated={...plan,source:'ITEMIZED',updatedAt:new Date().toISOString()}; await budgetPlanRepository.save(migrated); budgetPlans=[migrated]; }
+    const onboardingCompletedNow = announceOnboardingCompletion && !wasOnboardingComplete && getOnboardingState().isComplete;
+    if (onboardingCompletedNow) onboardingCompletionNoticeVisible = true;
+    else if (!getOnboardingState().isComplete) onboardingCompletionNoticeVisible = false;
     canonicaliseRoute(); render(); scheduleMarketSyncCheck(); void maybeAutoSyncMarket();
+    return onboardingCompletedNow;
   } catch (error) {
     root.innerHTML = `<section class="load-error"><h1>無法載入儀表板</h1><p>${escapeHtml(error.message || '瀏覽器阻擋了本機儲存功能。')}</p><button onclick="location.reload()">重新載入</button></section>`;
+    return false;
   }
 }
 function cost(transaction) { return calculateTransactionCost(transaction); }
@@ -891,7 +900,8 @@ async function syncMarket(options = {}) {
     syncProgress='';marketSyncInProgress=false;await load();
     const quotaLimited = failures.some(message => message.includes('免費 API 額度已用完'));
     const closeNote=isWaitingForTodayClose()?'；今日資料約 18:00 後更新':'';
-    toast(failures.length ? (quotaLimited ? 'FinMind 額度已用完；已保留成功取得的資料，系統稍後重試' : `完成，但 ${failures.length} 檔有資料未更新，系統稍後重試`) : automatic ? `已自動同步 ${symbols.length} 檔市場資料${closeNote}` : `已同步 ${symbols.length} 檔市場資料${closeNote}`);
+    const syncMessage=failures.length ? (quotaLimited ? 'FinMind 額度已用完；已保留成功取得的資料，系統稍後重試' : `完成，但 ${failures.length} 檔有資料未更新，系統稍後重試`) : automatic ? `已自動同步 ${symbols.length} 檔市場資料${closeNote}` : `已同步 ${symbols.length} 檔市場資料${closeNote}`;
+    if (failures.length || !automatic || !onboardingCompletionNoticeVisible) toast(syncMessage);
     if (failures.length) console.warn('Market sync failures:', failures);
   } finally {
     syncProgress = '';
@@ -936,13 +946,40 @@ function budgetEditor() {
   return `<section class="panel budget-editor" aria-labelledby="budget-editor-title"><div class="panel-title"><div><p class="eyebrow">${existing?'編輯項目':'新增項目'}</p><h2 id="budget-editor-title">${existing ? escapeHtml(existing.name) : '新增一筆生活開銷'}</h2><p>只要回答「花多少、多久一次」，系統就會換算為退休時每月要準備的金額。</p></div><button class="secondary" type="button" id="cancelBudgetEdit">取消</button></div><form id="budgetItemForm" novalidate><div id="budgetErrorSummary" class="budget-error-summary" role="alert" tabindex="-1" hidden><b>請修正以下欄位</b><ul></ul></div><section class="budget-form-section"><div class="budget-section-heading"><span>1</span><div><h3>這筆支出是什麼？</h3><p>先選分類與名稱，方便你之後整理預算。</p></div></div><div class="budget-form-grid budget-basic-grid"><label>生活層級<select name="bucket"><option value="NEED" ${item.bucket==='NEED'?'selected':''}>基本需要</option><option value="WANT" ${item.bucket==='WANT'?'selected':''}>品質想要</option></select><small>基本需要是日常必要；品質想要是娛樂、旅遊與興趣。</small></label><label>分類<select id="budgetCategory" name="category">${budgetCategoryOptions(item.category)}</select></label><label class="budget-name-field">項目名稱<input id="budgetName" name="name" maxlength="40" value="${escapeHtml(item.name)}" placeholder="例如：每月餐費、手機、房租" aria-describedby="budgetName-error" required /><small id="budgetName-error" class="field-error"></small></label></div></section><section class="budget-form-section"><div class="budget-section-heading"><span>2</span><div><h3>這筆錢怎麼發生？</h3><p>選一種最接近的情況；另一種的欄位會自動隱藏。</p></div></div><div class="budget-mode-options" role="radiogroup" aria-label="支出類型"><label class="budget-mode-card ${!isReplacement?'selected':''}"><input id="budgetModeRecurring" type="radio" name="calculationMode" value="RECURRING" ${!isReplacement?'checked':''}/><span><b>固定／定期支出</b><small>例如餐費、房租、保險、旅遊</small></span></label><label class="budget-mode-card ${isReplacement?'selected':''}"><input id="budgetModeReplacement" type="radio" name="calculationMode" value="REPLACEMENT" ${isReplacement?'checked':''}/><span><b>多年才換一次</b><small>例如手機、電腦、家電、家具</small></span></label></div><div id="budgetRecurringFields" class="budget-mode-fields" ${isReplacement?'hidden':''}><p class="budget-mode-explanation">例如：房租每月 10,000 元，退休後每月就要準備 10,000 元。</p><div class="budget-form-grid budget-calculation-grid"><label><span id="budgetAmountLabel">每次花費（TWD）</span><input id="budgetAmount" name="occurrenceAmount" inputmode="numeric" type="number" min="0" step="1" value="${escapeHtml(item.occurrenceAmount)}" placeholder="例如：10000" aria-describedby="budgetAmount-error budgetAmount-hint" required /><small id="budgetAmount-hint">填一次實際會花多少錢。</small><small id="budgetAmount-error" class="field-error"></small></label><label id="budgetFrequencyField">多久花一次？<select id="budgetFrequency" name="frequency">${budgetFrequencyOptions(item.frequency)}</select><small>系統會自動換算成每月平均。</small></label><label id="budgetIntervalField" ${!['EVERY_N_MONTHS','EVERY_N_YEARS'].includes(item.frequency)?'hidden':''}>間隔數量<input id="budgetInterval" name="intervalCount" type="number" min="1" max="120" step="1" value="${escapeHtml(item.intervalCount)}" /><small>例如每 3 個月一次。</small></label></div></div><div id="budgetReplacementFields" class="budget-mode-fields" ${!isReplacement?'hidden':''}><p class="budget-mode-explanation">例如：筆電 48,000 元、每 4 年換一次；系統會建議每月預留 1,000 元。</p><div class="budget-form-grid budget-calculation-grid"><label><span id="budgetReplacementAmountLabel">預計更換金額（TWD）</span><input id="budgetReplacementAmount" inputmode="numeric" type="number" min="0" step="1" value="${escapeHtml(item.occurrenceAmount)}" placeholder="例如：48000" aria-describedby="budgetAmount-error budgetAmount-hint" required /><small>含配件或你預期的總成本。</small></label><label>預計幾年換一次？<input id="budgetReplacementCycle" name="replacementCycleYears" type="number" min="1" max="50" step="0.1" value="${escapeHtml(item.replacementCycleYears)}" aria-describedby="budgetReplacementCycle-error" /><small>例如手機 3 年、筆電 4 年。</small><small id="budgetReplacementCycle-error" class="field-error"></small></label></div></div></section><section class="budget-form-section budget-optional"><div class="budget-section-heading"><span>3</span><div><h3>需要補充嗎？<em>選填</em></h3><p>想記錄品牌、用途或其他說明時再填。</p></div></div><label class="budget-note">備註<input name="note" maxlength="120" value="${escapeHtml(item.note)}" placeholder="例如：包含保固與配件" /></label></section><div id="replacementSuggestion" class="replacement-suggestion" hidden><b>看起來像耐用品。</b><span>手機、電腦與家電通常不是每年購買，可以改成汰換準備。</span><button type="button" class="text-button" id="useReplacementMode">改用多年汰換</button></div><div class="budget-preview" aria-live="polite"><div><span>換算後會加進退休目標</span><strong id="budgetPreview">每年 0 元 · 每月 0 元</strong></div><small id="budgetPreviewHint">填完金額與週期，就能看到系統如何換算。</small></div><div class="budget-editor-actions"><button class="primary" type="submit">${existing?'儲存修改':'新增項目'}</button></div></form></section>`;
 }
 function budgetEmptyState() { return `<section class="panel budget-empty"><p class="eyebrow">從日常開始</p><h2>不必先猜每月要多少</h2><p>先填固定支出，再補年度與多年一次的汰換費用；系統會轉成退休月現金流目標。</p><div class="budget-steps"><span>1. 每月固定支出</span><span>2. 年度支出</span><span>3. 多年汰換準備</span></div><button class="primary" id="startBudget">從基本需要開始</button><div class="budget-suggestions"><b>常被漏掉的項目</b>${BUDGET_SUGGESTIONS.map((item,index)=>`<button class="suggestion" data-budget-suggestion="${index}">${item.name}<span>＋</span></button>`).join('')}</div></section>`; }
+function stepBannerIcon(kind) {
+  return kind === 'success'
+    ? '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11.1V12a8 8 0 1 1-4.7-7.3"/><path d="m9 11 3 3L22 4"/></svg>'
+    : '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3"/><path d="M12 2v3M22 12h-3M12 22v-3M2 12h3"/></svg>';
+}
+function contextualStepBanner(currentPage, onboarding = getOnboardingState(), showCompletionNotice = onboardingCompletionNoticeVisible) {
+  if (onboarding.isComplete && showCompletionNotice) {
+    return `<section class="step-banner is-done" role="status" aria-label="新手引導已完成"><div class="step-banner-icon">${stepBannerIcon('success')}</div><div class="step-banner-content"><b>完成！兩項基礎資料已備齊</b><p>現在可以查看股息能支付幾成退休生活費，以及持股資產的成長軌跡。</p></div><div class="step-banner-actions"><button class="primary" data-step-action="overview">查看投資總覽 →</button></div></section>`;
+  }
+  if (onboarding.isComplete) return '';
+  if (currentPage === 'budget') {
+    if (!onboarding.budgetDone) {
+      return `<section class="step-banner" role="region" aria-label="新手引導提示"><div class="step-banner-icon">${stepBannerIcon('target')}</div><div class="step-banner-content"><b>第 1 步：新增一筆生活費</b><p>從房租、餐費等固定支出開始，系統會換算退休後每月需要準備的金額。</p></div></section>`;
+    }
+    return `<section class="step-banner" role="region" aria-label="下一步提示"><div class="step-banner-icon">${stepBannerIcon('target')}</div><div class="step-banner-content"><b>下一步：加入持股資料</b><p>生活費已加入；再匯入券商 CSV 或新增買進交易，就能查看完整分析。</p></div><div class="step-banner-actions"><button class="primary" data-step-action="transactions">前往加入持股 →</button><button class="secondary" data-step-action="overview">返回總覽</button></div></section>`;
+  }
+  if (currentPage === 'transactions') {
+    if (!onboarding.holdingsDone) {
+      const budgetHint = !onboarding.budgetDone ? '生活費尚未新增，也可以先完成這一步。' : '完成後即可回到總覽查看分析。';
+      return `<section class="step-banner" role="region" aria-label="新手引導提示"><div class="step-banner-icon">${stepBannerIcon('target')}</div><div class="step-banner-content"><b>第 2 步：加入持股資料</b><p>匯入券商 CSV，或手動新增一筆買進交易。${budgetHint}</p></div>${!onboarding.budgetDone ? '<div class="step-banner-actions"><button class="secondary" data-step-action="budget">先新增生活費 →</button></div>' : ''}</section>`;
+    }
+    if (!onboarding.budgetDone) {
+      return `<section class="step-banner" role="region" aria-label="下一步提示"><div class="step-banner-icon">${stepBannerIcon('target')}</div><div class="step-banner-content"><b>下一步：新增一筆生活費</b><p>持股資料已加入；再設定每月生活費，就能計算生活費覆蓋程度。</p></div><div class="step-banner-actions"><button class="primary" data-step-action="budget">前往新增生活費 →</button><button class="secondary" data-step-action="overview">返回總覽</button></div></section>`;
+    }
+  }
+  return '';
+}
 function livingBudgetPage() {
   const summary=budgetSummary(), plan=summary.plan, ordered=orderedBudgetItems(), needs=ordered.filter(item=>item.bucket==='NEED'), wants=ordered.filter(item=>item.bucket==='WANT');
   const hasItems=budgetItems.length>0;
   const undo=budgetUndoItem ? `<section class="budget-undo" role="status">已刪除「${escapeHtml(budgetUndoItem.name)}」<button id="undoBudgetDelete">復原</button></section>` : '';
   const listSection=(bucket,title,items)=>{const active=items.filter(item=>item.isActive!==false), monthly=active.reduce((sum,item)=>sum+annualBudget(item)/12,0), rows=items.map((item,index)=>budgetItemCard(item,index,items.length)).join('') || `<p class="budget-filter-empty">尚未有${title}項目。</p>`;return `<section class="budget-list-section" aria-labelledby="budget-list-${bucket}"><div class="budget-list-section-heading"><div><h3 id="budget-list-${bucket}">${title}</h3><p>${items.length} 項${active.length ? ` · 目前每月 ${fmt(monthly)}` : ''}</p></div><span>${bucket==='NEED'?'必要生活開支':'讓退休生活更有餘裕'}</span></div><div class="budget-items">${rows}</div></section>`;};
   const list = `<section class="panel budget-list"><div class="panel-title"><div><p class="eyebrow">明細</p><h2>生活支出項目</h2><p>基本需要與品質想要各自排序；可用上下箭頭把相關項目排在一起，順序會保留在本機。</p></div><div class="budget-list-actions"><button class="primary budget-add-button" type="button" id="addBudgetItem" aria-expanded="${budgetEditorOpen}">＋ 新增項目</button></div></div><div class="budget-column-head" aria-hidden="true"><span>層級、分類與項目</span><span>每月需求／年預算</span><span>操作</span></div>${listSection('NEED','基本需要',needs)}${listSection('WANT','品質想要',wants)}</section>`;
-  return `<section class="budget-page"><section class="budget-hero"><div><p class="eyebrow">退休規劃</p><h2>我的退休生活預算</h2><p>先從最固定的生活支出開始，再逐步補上保險、醫療與耐用品汰換費用。</p></div></section>${undo}<section class="budget-summary-grid"><article><span>基本需要</span><strong>${fmt(summary.needsAnnual/12)}</strong><small>年 ${fmt(summary.needsAnnual)}</small></article><article><span>品質想要</span><strong>${fmt(summary.wantsAnnual/12)}</strong><small>年 ${fmt(summary.wantsAnnual)}</small></article><article><span>安全緩衝</span><strong>${plan?.bufferRateBps/100 || 0}%</strong><small>每月 ${fmt(summary.bufferAnnual/12)}</small></article><article class="budget-total"><span>退休月現金流目標</span><strong>${fmt(summary.targetMonthly)}</strong><small>${currentTargetLabel()}</small></article></section>${hasItems ? `${list}${budgetEditorOpen ? budgetEditor() : ''}` : `${budgetEmptyState()}${budgetEditorOpen ? budgetEditor() : ''}`}</section>`;
+  return `<section class="budget-page">${contextualStepBanner('budget')}<section class="budget-hero"><div><p class="eyebrow">退休規劃</p><h2>我的退休生活預算</h2><p>先從最固定的生活支出開始，再逐步補上保險、醫療與耐用品汰換費用。</p></div></section>${undo}<section class="budget-summary-grid"><article><span>基本需要</span><strong>${fmt(summary.needsAnnual/12)}</strong><small>年 ${fmt(summary.needsAnnual)}</small></article><article><span>品質想要</span><strong>${fmt(summary.wantsAnnual/12)}</strong><small>年 ${fmt(summary.wantsAnnual)}</small></article><article><span>安全緩衝</span><strong>${plan?.bufferRateBps/100 || 0}%</strong><small>每月 ${fmt(summary.bufferAnnual/12)}</small></article><article class="budget-total"><span>退休月現金流目標</span><strong>${fmt(summary.targetMonthly)}</strong><small>${currentTargetLabel()}</small></article></section>${hasItems ? `${list}${budgetEditorOpen ? budgetEditor() : ''}` : `${budgetEmptyState()}${budgetEditorOpen ? budgetEditor() : ''}`}</section>`;
 }
 function navIcon(id) {
   const paths={
@@ -959,6 +996,20 @@ function settingsPage() {
   const plan=budgetPlan(), summary=budgetSummary(), bufferRate=Number(plan?.bufferRateBps||0)/100, selectedIdeal=plan?.selectedTarget!=='NEEDS_ONLY';
   return `<section class="settings-page"><section class="panel setting retirement-goal-settings"><div class="panel-title"><div><p class="eyebrow">退休目標與覆蓋率</p><h2>決定想要的退休生活</h2><p>生活線與安全緩衝會一起計入退休月現金流目標。</p></div><button class="secondary" type="button" data-page="budget">管理退休預算</button></div><div class="setting-target"><span>目前退休月現金流目標</span><strong>${fmt(currentMonthlyTarget())}</strong><small>依退休規劃明細即時計算。</small></div><div class="settings-preference-grid"><label>覆蓋率比較基準<select id="budgetTargetMode"><option value="NEEDS_AND_WANTS" ${selectedIdeal?'selected':''}>理想生活線（需要＋想要）</option><option value="NEEDS_ONLY" ${!selectedIdeal?'selected':''}>最低生活線（只算需要）</option></select><small>目前基本需要 ${fmt(summary.needsAnnual/12)}；${selectedIdeal?'含品質想要與安全緩衝':'不含品質想要'}。</small></label><div class="buffer-setting"><b>安全緩衝率</b><small>為漏項與價格波動預留空間。</small><div class="buffer-controls" role="group" aria-label="安全緩衝率">${[0,5,10,15].map(rate=>`<button type="button" data-buffer-rate="${rate}" class="${bufferRate===rate?'active':''}" aria-pressed="${bufferRate===rate}">${rate}%</button>`).join('')}<label>自訂 <input id="customBufferRate" type="number" min="0" max="50" step="1" inputmode="numeric" value="${!([0,5,10,15].includes(bufferRate)) ? bufferRate : ''}" aria-label="自訂安全緩衝率" />%</label></div></div></div></section><section class="panel setting"><div class="panel-title"><div><p class="eyebrow">股息現金流</p><h2>股息歸屬方式</h2><p>選擇現金流報表採用的月份計算口徑。</p></div></div><label>股息歸屬依據<select id="basis" data-setting-control><option value="PAYMENT_DATE" ${settings.dividendDateBasis==='PAYMENT_DATE'?'selected':''}>依發放日（建議）</option><option value="EX_DIVIDEND_DATE" ${settings.dividendDateBasis==='EX_DIVIDEND_DATE'?'selected':''}>依除息日</option></select><small>會影響股息現金流的月份歸屬。</small></label></section>${chartSettingsPanel()}<section class="two-col settings-two-col"><section class="panel setting"><div class="panel-title"><div><p class="eyebrow">資料備份與維護</p><h2>備份與還原</h2><p>備份包含交易、退休規劃與所有設定。</p></div></div><div class="setting-actions"><button class="secondary" id="backup">匯出 JSON 備份</button><label class="file-label">匯入 JSON 備份<input id="restore" type="file" accept="application/json" /></label></div></section><section class="panel setting"><div class="panel-title"><div><p class="eyebrow">市場資料</p><h2>快取維護</h2><p>清除後不影響交易與退休規劃，可隨時重新同步。</p></div></div><button class="danger subtle setting-action" id="clearMarket">清除市場快取</button></section></section><section class="panel setting-danger-zone settings-danger-card"><div><div><p class="eyebrow">危險區</p><h2>清除全部個人資料</h2><p>這會永久刪除目前瀏覽器內的交易、退休規劃、設定與市場快取。</p></div><button class="danger setting-action" id="clearAll">清除全部個人資料</button></div></section></section>`;
 }
+function navBadge(id, onboarding = getOnboardingState()) {
+  if (onboarding.isComplete) return '';
+  if (id === 'budget') {
+    return !onboarding.budgetDone
+      ? '<span class="nav-badge pending" aria-label="待設定">待設定</span>'
+      : '<span class="nav-badge done" aria-label="已設定">✓</span>';
+  }
+  if (id === 'transactions') {
+    return !onboarding.holdingsDone
+      ? '<span class="nav-badge pending" aria-label="待匯入">待匯入</span>'
+      : '<span class="nav-badge done" aria-label="已匯入">✓</span>';
+  }
+  return '';
+}
 function render() {
   document.body?.classList.remove('mobile-nav-open');
   settings.showTotalAsset = settings.showTotalAsset ?? true;
@@ -966,7 +1017,8 @@ function render() {
   settings.gainMilestoneInterval = normaliseGainMilestoneInterval(settings.gainMilestoneInterval);
   Object.assign(settings, normaliseTrendEventMarkerSettings(settings));
   const m = page === 'overview' ? metrics() : null;
-  root.innerHTML = `<div class="shell"><aside><div class="sidebar-heading"><a class="brand" href="#overview"><span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 18 18 5M9 5h9v9"/></svg></span><b>存股退休</b><em>STOCK JOURNEY</em></a><button class="mobile-menu-toggle" type="button" aria-label="開啟菜單" aria-controls="mobileNavigationPanel" aria-expanded="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg></button></div><div class="mobile-nav-panel" id="mobileNavigationPanel"><div class="mobile-nav-heading"><div><b>頁面導覽</b><span>目前：${PAGE_LABELS[page]}</span></div><button class="mobile-nav-close" type="button" aria-label="關閉菜單"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button></div><nav aria-label="主要導覽">${Object.entries(PAGE_LABELS).map(([id,name])=>`<button data-page="${id}" class="${page===id?'active':''}" ${page===id?'aria-current="page"':''}><i>${navIcon(id)}</i><span>${name}</span></button>`).join('')}</nav><div class="privacy"><span aria-hidden="true"></span><b>資料只留在這台裝置</b><a href="#settings" data-page="settings">備份與設定</a></div></div><button class="mobile-nav-backdrop" type="button" aria-label="關閉菜單" aria-hidden="true" tabindex="-1"></button></aside><main id="main-content" tabindex="-1">${header()}${page === 'overview' ? blueDashboardOverview(m) : page === 'budget' ? livingBudgetPage() : page === 'transactions' ? transactionsPage() : page === 'market-data' ? marketDataPage() : page === 'settings' ? settingsPage() : dividendsPage()}</main></div>${transactionModal()}${aiImportGuide()}<div id="toast" role="status" aria-live="polite"></div>`;
+  const onboarding = getOnboardingState();
+  root.innerHTML = `<div class="shell"><aside><div class="sidebar-heading"><a class="brand" href="#overview"><span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 18 18 5M9 5h9v9"/></svg></span><b>存股退休</b><em>STOCK JOURNEY</em></a><button class="mobile-menu-toggle" type="button" aria-label="開啟菜單" aria-controls="mobileNavigationPanel" aria-expanded="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg></button></div><div class="mobile-nav-panel" id="mobileNavigationPanel"><div class="mobile-nav-heading"><div><b>頁面導覽</b><span>目前：${PAGE_LABELS[page]}</span></div><button class="mobile-nav-close" type="button" aria-label="關閉菜單"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button></div><nav aria-label="主要導覽">${Object.entries(PAGE_LABELS).map(([id,name])=>`<button data-page="${id}" class="${page===id?'active':''}" ${page===id?'aria-current="page"':''}><i>${navIcon(id)}</i><span>${name}</span>${navBadge(id, onboarding)}</button>`).join('')}</nav><div class="privacy"><span aria-hidden="true"></span><b>資料只留在這台裝置</b><a href="#settings" data-page="settings">備份與設定</a></div></div><button class="mobile-nav-backdrop" type="button" aria-label="關閉菜單" aria-hidden="true" tabindex="-1"></button></aside><main id="main-content" tabindex="-1">${header()}${page === 'overview' ? blueDashboardOverview(m) : page === 'budget' ? livingBudgetPage() : page === 'transactions' ? transactionsPage() : page === 'market-data' ? marketDataPage() : page === 'settings' ? settingsPage() : dividendsPage()}</main></div>${transactionModal()}${aiImportGuide()}<div id="toast" role="status" aria-live="polite"></div>`;
   bind();
 }
 function header() {
@@ -975,13 +1027,24 @@ function header() {
   const action='';
   return `<header><div><p class="eyebrow">存股退休</p><h1>${PAGE_LABELS[page]}</h1><p class="market-as-of" role="status" aria-live="polite" aria-atomic="true">${subtitle}</p></div><div class="header-actions">${action}</div></header>`;
 }
-function onboardingChecklist() {
-  const budgetDone = budgetItems.some(item => item.isActive !== false && Number(item.occurrenceAmount) > 0);
-  const holdingsDone = transactions.length > 0;
-  const complete = Number(budgetDone) + Number(holdingsDone);
-  if (complete === 2) return '';
-  const next = !budgetDone ? ['建立退休預算','先填寫每月生活所需。','budget','開始規劃'] : ['加入持股紀錄','匯入 CSV 或手動新增交易。','transactions','加入持股'];
-  return `<section class="onboarding" aria-labelledby="onboarding-title"><span class="onboarding-step" aria-hidden="true">${complete + 1}</span><div><b id="onboarding-title">下一步：${next[0]}</b><p>${next[1]} <span class="onboarding-count">已完成 ${complete}／2</span></p></div><button class="secondary" data-onboarding-action="${next[2]}">${next[3]}</button></section>`;
+function getOnboardingState(items = budgetItems, txs = transactions) {
+  const budgetDone = items.some(item => item.isActive !== false && Number(item.occurrenceAmount) > 0);
+  const holdingsDone = txs.length > 0;
+  const completedCount = Number(budgetDone) + Number(holdingsDone);
+  const totalSteps = 2;
+  const progressPercent = Math.round((completedCount / totalSteps) * 100);
+  const isComplete = completedCount === totalSteps;
+  return { budgetDone, holdingsDone, completedCount, totalSteps, progressPercent, isComplete };
+}
+function overviewJourneyCard(onboarding = getOnboardingState()) {
+  if (onboarding.isComplete) return '';
+  const step1Done = onboarding.budgetDone;
+  const step2Done = onboarding.holdingsDone;
+  const step2ButtonClass = step2Done || !step1Done ? 'secondary' : 'primary';
+  return `<section class="journey-card" aria-labelledby="journey-title"><div class="journey-header"><div><p class="eyebrow">新手開始</p><h2 id="journey-title">先完成 2 件事</h2><p>新增每月生活費並加入持股資料，就能看到股息可支付幾成退休生活費。</p></div><div class="journey-progress-wrap"><span class="journey-status">已完成 ${onboarding.completedCount}／${onboarding.totalSteps}</span><div class="journey-progress" role="progressbar" aria-label="新手設定進度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${onboarding.progressPercent}"><i style="width:${onboarding.progressPercent}%"></i></div></div></div><div class="journey-tasks"><article class="journey-task ${step1Done ? 'is-done' : ''}"><div class="journey-task-badge" aria-hidden="true">${step1Done ? '✓' : '1'}</div><div class="journey-task-body"><b>新增一筆生活費</b><p>從房租或餐費開始，換算退休後每月需要多少錢。</p></div><button class="${step1Done ? 'secondary' : 'primary'}" data-onboarding-action="budget">${step1Done ? '查看預算明細' : '前往新增生活費 →'}</button></article><article class="journey-task ${step2Done ? 'is-done' : ''}"><div class="journey-task-badge" aria-hidden="true">${step2Done ? '✓' : '2'}</div><div class="journey-task-body"><b>加入持股資料</b><p>匯入券商 CSV，或手動新增一筆買進交易。</p></div><button class="${step2ButtonClass}" data-onboarding-action="transactions">${step2Done ? '管理交易紀錄' : '加入持股 →'}</button></article></div></section>`;
+}
+function onboardingPreview() {
+  return `<section class="onboarding-preview" aria-labelledby="onboarding-preview-title"><div><p class="eyebrow">完成設定後</p><h2 id="onboarding-preview-title">一眼看懂退休準備進度</h2><p>先加入第一筆資料，總覽就會開始呈現真正與你有關的數字。</p></div><div class="onboarding-preview-items"><article><b>生活費覆蓋程度</b><span>股息可支付幾成退休生活費</span></article><article><b>持股成本與市值</b><span>掌握目前投入與資產變化</span></article><article><b>資產成長軌跡</b><span>查看長期累積的變化趨勢</span></article></div></section>`;
 }
 function blueDashboardOverview(m) {
   const avg=m.div.avg;
@@ -1002,7 +1065,9 @@ function blueDashboardOverview(m) {
   const marketChangeLabel=!priceCount?'尚無收盤價；同步後顯示市值':!allPrices?`${priceCount}/${m.holdings.length} 檔使用收盤價，其餘暫以成本估算`:marketChange==null?'尚無外部投入可比較':`投入成果 ${marketChange>=0?'+':'−'}${fmt(Math.abs(marketChange))}（${fmtReturnPercent(marketChangeRate)}）`;
   const marketValueHint=allPrices?`採用截至 ${syncSummary.latestDate||'最近交易日'} 的收盤價`:priceCount?'此為混合收盤價與成本的估算值':'目前只顯示交易取得成本，不代表市場價值';
   const goalAside=!hasGoal ? `<span>退休目標尚未設定</span><strong>設定退休規劃</strong><button data-page="budget">開始規劃 →</button>` : goalReached ? `<span class="goal-status">已達成目標</span><strong>${fmt(Math.abs(gap))}</strong><small>平均每月超過目標</small>` : `<span>尚未達標</span><strong>${fmt(gap)}</strong><small>平均每月仍需補足</small>`;
-  return `${onboardingChecklist()}<section class="blue-goal-card ${goalReached?'is-reached':'is-progress'} ${hasGoal?'':'is-unset'}"><div class="blue-goal-main"><p class="eyebrow">退休生活費覆蓋率</p><div class="blue-goal-value"><strong>${coverage==null?'尚無資料':`${coverage.toFixed(1)}%`}</strong><span>${averageLabel}</span></div><div class="blue-progress" role="progressbar" aria-label="退休生活費覆蓋率" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.min(coverage||0,100).toFixed(0)}"><i style="width:${Math.min(coverage||0,100)}%"></i></div><p>平均月股息 <b>${fmt(avg)}</b><span>／</span>退休月現金流目標 <b>${hasGoal?fmt(target):'尚未設定'}</b></p><small class="goal-source">${currentTargetLabel()} <button data-page="budget">查看明細</button></small></div><div class="blue-goal-gap">${goalAside}</div></section><section class="blue-kpis"><article><span>${marketValueLabel}</span><strong>${fmt(m.market)}</strong><small class="market-change ${marketChange == null ? '' : marketChange>=0?'positive':'negative'}">${marketChangeLabel}</small><small>${marketValueHint}</small></article><article><span>${currentYear} 年已入帳股息</span><strong>${fmt(paidThisYear)}</strong><small>不包含尚未發放項目</small></article><article><span>${currentYear} 年預計再入帳</span><strong>${fmt(upcomingThisYear)}</strong><small>已公告、尚未發放</small></article></section>${transactions.length?`<section class="panel asset-trend-panel"><div class="panel-title trend-heading"><div><p class="eyebrow">資產軌跡</p><h2>資產走勢</h2></div></div><div id="trendChartMount">${trendChart()}</div></section>`:emptyState()}`;
+  const onboarding=getOnboardingState(), journey=overviewJourneyCard(onboarding);
+  if (!onboarding.budgetDone && !onboarding.holdingsDone) return `${journey}${onboardingPreview()}`;
+  return `${journey}<section class="blue-goal-card ${goalReached?'is-reached':'is-progress'} ${hasGoal?'':'is-unset'}"><div class="blue-goal-main"><p class="eyebrow">退休生活費覆蓋率</p><div class="blue-goal-value"><strong>${coverage==null?'尚無資料':`${coverage.toFixed(1)}%`}</strong><span>股息目前可支付幾成退休生活費 · ${averageLabel}</span></div><div class="blue-progress" role="progressbar" aria-label="退休生活費覆蓋率" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.min(coverage||0,100).toFixed(0)}"><i style="width:${Math.min(coverage||0,100)}%"></i></div><p>平均月股息 <b>${fmt(avg)}</b><span>／</span>退休月現金流目標 <b>${hasGoal?fmt(target):'尚未設定'}</b></p><small class="goal-source">${currentTargetLabel()} <button data-page="budget">查看明細</button></small></div><div class="blue-goal-gap">${goalAside}</div></section><section class="blue-kpis"><article><span>${marketValueLabel}</span><strong>${fmt(m.market)}</strong><small class="market-change ${marketChange == null ? '' : marketChange>=0?'positive':'negative'}">${marketChangeLabel}</small><small>${marketValueHint}</small></article><article><span>${currentYear} 年已入帳股息</span><strong>${fmt(paidThisYear)}</strong><small>不包含尚未發放項目</small></article><article><span>${currentYear} 年預計再入帳</span><strong>${fmt(upcomingThisYear)}</strong><small>已公告、尚未發放</small></article></section>${transactions.length?`<section class="panel asset-trend-panel"><div class="panel-title trend-heading"><div><p class="eyebrow">資產軌跡</p><h2>資產走勢</h2></div></div><div id="trendChartMount">${trendChart()}</div></section>`:emptyState()}`;
 }
 function trendDailySeries() {
   if (!transactions.length) return [];
@@ -1172,8 +1237,9 @@ function transactionUndoNotice() {
 function transactionsPage() {
   const groups = transactionGroups();
   const undo = transactionUndoNotice();
-  const actions = `<div class="transaction-actions"><div class="transaction-page-actions"><button class="secondary" id="aiImportGuide">請 AI 整理</button><button class="secondary" data-transaction-import>匯入 CSV</button><button class="primary" data-add-transaction>新增交易</button></div><p class="transaction-import-help">先讓 AI 整理成標準 CSV，再匯入；資料只會儲存在此裝置。<a href="./my-stock-transactions.csv" download="my-stock-transactions.csv">下載持股範例</a></p></div>`;
-  return groups.length ? `${undo}<section class="panel transactions-panel"><div class="panel-title"><div><h2>交易紀錄</h2><p>依股票代號彙整；展開即可查看明細。</p></div>${actions}</div><div class="transaction-groups">${groups.map(group => {
+  const banner = contextualStepBanner('transactions');
+  const actions = `<div class="transaction-actions"><div class="transaction-page-actions"><button class="primary" data-add-transaction>新增交易</button><button class="secondary" data-transaction-import>匯入 CSV</button><button class="secondary" id="aiImportGuide">請 AI 整理</button></div><p class="transaction-import-help">先讓 AI 整理成標準 CSV，再匯入；資料只會儲存在此裝置。<a href="./my-stock-transactions.csv" download="my-stock-transactions.csv">下載持股範例</a></p></div>`;
+  const body = groups.length ? `${undo}<section class="panel transactions-panel"><div class="panel-title"><div><h2>交易紀錄</h2><p>依股票代號彙整；展開即可查看明細。</p></div>${actions}</div><div class="transaction-groups">${groups.map(group => {
     const name = cacheFor(group.symbol)?.name;
     const latest = lastPrice(group.symbol);
     const marketValue = latest ? group.quantity * Number(latest.close) : null;
@@ -1198,6 +1264,7 @@ function transactionsPage() {
       }).join('')}</tbody></table></div>
     </details>`;
   }).join('')}</div></section>` : `${undo}<section class="panel transactions-panel"><div class="panel-title"><div><h2>交易紀錄</h2><p>新增一筆交易，或一次匯入既有紀錄。</p></div>${actions}</div><div class="empty compact"><div class="empty-icon" aria-hidden="true"></div><h2>尚未有交易紀錄</h2><p>請使用上方操作匯入 CSV，或手動新增第一筆交易。</p></div></section>`;
+  return `${banner}${body}`;
 }
 function transactionModal() {
   if (!transactionModalOpen) return '';
@@ -1346,7 +1413,7 @@ function updateBudgetPreview() {
   document.querySelectorAll('.budget-mode-card').forEach(card=>card.classList.toggle('selected',card.querySelector('input')?.checked));
   const prompt=document.querySelector('#replacementSuggestion'), name=item.name, isDurable=item.category==='REPLACEMENT'||/(手機|平板|電腦|筆電|螢幕|家電|家具|車|裝修)/.test(name); if(prompt)prompt.hidden=mode||!isDurable;
 }
-async function saveBudgetItem(event) { event.preventDefault(); const form=event.currentTarget,item=budgetItemFromForm(form),errors=validateBudgetItem(item); if(errors.length){showBudgetErrors(form,errors);return;} const now=new Date().toISOString(), existing=budgetItems.find(row=>row.id===budgetEditId), sortOrder=existing?.bucket===item.bucket ? existing.sortOrder : budgetItems.filter(row=>row.bucket===item.bucket).length, record={...existing,...item,id:existing?.id||uid(),planId:budgetPlan()?.id||'default',isActive:existing?.isActive??true,sortOrder,createdAt:existing?.createdAt||now,updatedAt:now}; await budgetItemRepository.save(record); budgetEditId=null; budgetDraft=null; budgetEditorOpen=false; await load(); toast(existing?'已儲存預算項目':'已新增預算項目'); }
+async function saveBudgetItem(event) { event.preventDefault(); const form=event.currentTarget,item=budgetItemFromForm(form),errors=validateBudgetItem(item); if(errors.length){showBudgetErrors(form,errors);return;} const now=new Date().toISOString(), existing=budgetItems.find(row=>row.id===budgetEditId), sortOrder=existing?.bucket===item.bucket ? existing.sortOrder : budgetItems.filter(row=>row.bucket===item.bucket).length, record={...existing,...item,id:existing?.id||uid(),planId:budgetPlan()?.id||'default',isActive:existing?.isActive??true,sortOrder,createdAt:existing?.createdAt||now,updatedAt:now}; await budgetItemRepository.save(record); budgetEditId=null; budgetDraft=null; budgetEditorOpen=false; const onboardingCompleted=await load({ announceOnboardingCompletion:true }); if(!onboardingCompleted)toast(existing?'已儲存預算項目':'已新增預算項目'); }
 async function setBudgetBuffer(rate) { const plan=budgetPlan(); if(!plan)return; const normalized=Math.max(0,Math.min(50,Number(rate)||0)); const next={...plan,bufferRateBps:Math.round(normalized*100),updatedAt:new Date().toISOString()};await budgetPlanRepository.save(next);budgetPlans=[next];render(); }
 async function setBudgetTargetMode(mode) { const plan=budgetPlan();if(!plan)return;const next={...plan,selectedTarget:mode,updatedAt:new Date().toISOString()};await budgetPlanRepository.save(next);budgetPlans=[next];render(); }
 function focusBudgetEditor() { requestAnimationFrame(()=>document.querySelector('#budgetName')?.focus()); }
@@ -1439,13 +1506,15 @@ function bind() {
   bindMobileNavigation();
   document.querySelectorAll('[data-page]').forEach(element => element.onclick = () => navigateToPage(element.dataset.page));
   document.querySelector('.brand')?.addEventListener('click', event => { event.preventDefault(); navigateToPage('overview'); });
-  document.querySelectorAll('[data-onboarding-action]').forEach(button => button.addEventListener('click', async () => {
+  document.querySelectorAll('[data-onboarding-action]').forEach(button => button.addEventListener('click', () => {
     if (button.dataset.onboardingAction === 'budget') {
       navigateToPage('budget');
-      await startBudgetItem();
     } else {
       navigateToPage('transactions');
     }
+  }));
+  document.querySelectorAll('[data-step-action]').forEach(button => button.addEventListener('click', () => {
+    navigateToPage(button.dataset.stepAction);
   }));
   if (page === 'budget') bindBudgetPage();
   bindTrendInteractions();
@@ -1531,7 +1600,7 @@ async function importCsv(file) {
     if(result.duplicateRows.length)warnings.push(`第 ${result.duplicateRows.join('、')} 列與既有或同檔交易完全相同`);
     if(warnings.length && !confirm(`發現 ${warnings.length} 項需要確認：\n${warnings.slice(0,5).join('\n')}\n\n仍要匯入 ${result.records.length} 筆有效資料嗎？`)) return;
     if(!result.records.length){alert(warnings.join('\n')||'CSV 沒有可匯入的交易');return;}
-    await transactionRepository.saveMany(result.records); await load(); toast(`已匯入 ${result.records.length} 筆交易${result.errors.length?`，略過 ${result.errors.length} 筆錯誤`:''}`);
+    await transactionRepository.saveMany(result.records); const onboardingCompleted=await load({ announceOnboardingCompletion:true }); if(!onboardingCompleted)toast(`已匯入 ${result.records.length} 筆交易${result.errors.length?`，略過 ${result.errors.length} 筆錯誤`:''}`);
   } catch (error) { alert(`無法匯入 CSV：${error.message}`); }
 }
 function openTransactionModal(id = null) { transactionEditId = typeof id==='string' ? id : null; transactionModalOpen = true; render(); }
@@ -1563,8 +1632,8 @@ async function saveManualTransaction(event) {
   await transactionRepository.save(record);
   transactionEditId = null;
   transactionModalOpen = false;
-  await load();
-  toast(`${existing?'已更新':'已新增'} ${symbol} 的交易紀錄`);
+  const onboardingCompleted=await load({ announceOnboardingCompletion:true });
+  if(!onboardingCompleted)toast(`${existing?'已更新':'已新增'} ${symbol} 的交易紀錄`);
 }
 function download(content,name,type) { const a=document.createElement('a'); a.href=URL.createObjectURL(new Blob([content],{type})); a.download=name; a.click(); URL.revokeObjectURL(a.href); }
 function backupSettings() { const { id, dividendDateBasis } = settings; return { id, dividendDateBasis, trendTooltipEventLimit:trendTooltipEventLimit(), showTotalAsset: settings.showTotalAsset ?? true, showTotalReturn: settings.showTotalReturn ?? true, gainMilestoneInterval: gainMilestoneInterval(), ...normaliseTrendEventMarkerSettings(settings) }; }

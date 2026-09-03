@@ -163,3 +163,184 @@ test('mobile navigator reserves its center for moving the selected range', () =>
 
   assert.deepEqual(Array.from(sandbox.result), ['move','start','end']);
 });
+
+test('onboarding state accurately derives progress and completion from items and transactions', () => {
+  const source = fs.readFileSync('app.js', 'utf8');
+  const functionSource = source.match(/function getOnboardingState\([\s\S]*?\n\}/)?.[0];
+  assert.ok(functionSource, 'getOnboardingState function must exist in app.js');
+
+  const sandbox = {};
+  vm.runInNewContext(`${functionSource}; result = [
+    getOnboardingState([], []),
+    getOnboardingState([{isActive:true, occurrenceAmount:1000}], []),
+    getOnboardingState([], [{symbol:'0050'}]),
+    getOnboardingState([{isActive:true, occurrenceAmount:1000}], [{symbol:'0050'}])
+  ];`, sandbox);
+
+  const results = JSON.parse(JSON.stringify(sandbox.result));
+  assert.deepEqual(results[0], {
+    budgetDone: false,
+    holdingsDone: false,
+    completedCount: 0,
+    totalSteps: 2,
+    progressPercent: 0,
+    isComplete: false,
+  });
+  assert.deepEqual(results[1], {
+    budgetDone: true,
+    holdingsDone: false,
+    completedCount: 1,
+    totalSteps: 2,
+    progressPercent: 50,
+    isComplete: false,
+  });
+  assert.deepEqual(results[2], {
+    budgetDone: false,
+    holdingsDone: true,
+    completedCount: 1,
+    totalSteps: 2,
+    progressPercent: 50,
+    isComplete: false,
+  });
+  assert.deepEqual(results[3], {
+    budgetDone: true,
+    holdingsDone: true,
+    completedCount: 2,
+    totalSteps: 2,
+    progressPercent: 100,
+    isComplete: true,
+  });
+});
+
+test('navigation renders actionable step badges during onboarding and hides them when complete', () => {
+  const source = fs.readFileSync('app.js', 'utf8');
+  const styles = fs.readFileSync('styles.css', 'utf8');
+
+  assert.match(source, /function navBadge\(/, 'navBadge helper should exist');
+  assert.match(source, /nav-badge/, 'nav markup should include nav-badge');
+  assert.match(styles, /\.nav-badge\s*\{/, 'styles.css should define .nav-badge');
+  assert.match(styles, /\.nav-badge\.pending/, 'styles.css should define .nav-badge.pending');
+  assert.match(styles, /\.nav-badge\.done/, 'styles.css should define .nav-badge.done');
+
+  const functionSource = source.match(/function navBadge\([\s\S]*?\n\}/)?.[0];
+  assert.ok(functionSource, 'navBadge function source should be extractable');
+
+  const sandbox = {};
+  vm.runInNewContext(`${functionSource}; result = [
+    navBadge('budget', { isComplete: false, budgetDone: false }),
+    navBadge('budget', { isComplete: false, budgetDone: true }),
+    navBadge('transactions', { isComplete: false, holdingsDone: false }),
+    navBadge('transactions', { isComplete: false, holdingsDone: true }),
+    navBadge('budget', { isComplete: true, budgetDone: true }),
+    navBadge('overview', { isComplete: false })
+  ];`, sandbox);
+
+  assert.match(sandbox.result[0], /pending.*待設定/);
+  assert.match(sandbox.result[1], /done.*✓/);
+  assert.match(sandbox.result[2], /pending.*待匯入/);
+  assert.match(sandbox.result[3], /done.*✓/);
+  assert.equal(sandbox.result[4], '');
+  assert.equal(sandbox.result[5], '');
+});
+
+test('overview renders comprehensive journey progress card with dual task steps', () => {
+  const source = fs.readFileSync('app.js', 'utf8');
+  const styles = fs.readFileSync('styles.css', 'utf8');
+
+  assert.match(source, /function overviewJourneyCard\(/);
+  assert.match(source, /overviewJourneyCard\(/);
+  assert.match(styles, /\.journey-card\s*\{/);
+  assert.match(styles, /\.journey-progress\s*\{/);
+  assert.match(styles, /\.journey-tasks\s*\{/);
+
+  const functionSource = source.match(/function overviewJourneyCard\([\s\S]*?\n\}/)?.[0];
+  assert.ok(functionSource, 'overviewJourneyCard function source should be extractable');
+
+  const sandbox = {};
+  vm.runInNewContext(`${functionSource}; result = [
+    overviewJourneyCard({ isComplete: true }),
+    overviewJourneyCard({ isComplete: false, completedCount: 0, totalSteps: 2, progressPercent: 0, budgetDone: false, holdingsDone: false }),
+    overviewJourneyCard({ isComplete: false, completedCount: 1, totalSteps: 2, progressPercent: 50, budgetDone: true, holdingsDone: false })
+  ];`, sandbox);
+
+  assert.equal(sandbox.result[0], '');
+  assert.match(sandbox.result[1], /role="progressbar"/);
+  assert.match(sandbox.result[1], /aria-valuenow="0"/);
+  assert.match(sandbox.result[1], /data-onboarding-action="budget"/);
+  assert.match(sandbox.result[1], /data-onboarding-action="transactions"/);
+  assert.match(sandbox.result[1], /前往新增生活費/);
+  assert.match(sandbox.result[1], /class="secondary" data-onboarding-action="transactions"/);
+
+  assert.match(sandbox.result[2], /aria-valuenow="50"/);
+  assert.match(sandbox.result[2], /查看預算明細/);
+  assert.match(sandbox.result[2], /class="primary" data-onboarding-action="transactions"/);
+});
+
+test('budget and transaction pages render contextual step banners during onboarding', () => {
+  const source = fs.readFileSync('app.js', 'utf8');
+  const styles = fs.readFileSync('styles.css', 'utf8');
+
+  assert.match(source, /function contextualStepBanner\(/);
+  assert.match(source, /contextualStepBanner\('budget'/);
+  assert.match(source, /contextualStepBanner\('transactions'/);
+  assert.match(source, /data-step-action/);
+  assert.match(styles, /\.step-banner\s*\{/);
+
+  const iconSource = source.match(/function stepBannerIcon\([\s\S]*?\n\}/)?.[0];
+  const functionSource = source.match(/function contextualStepBanner\([\s\S]*?\n\}/)?.[0];
+  assert.ok(iconSource, 'stepBannerIcon function source should be extractable');
+  assert.ok(functionSource, 'contextualStepBanner function source should be extractable');
+
+  const sandbox = {};
+  vm.runInNewContext(`${iconSource}; ${functionSource}; result = [
+    contextualStepBanner('budget', { isComplete: true }, false),
+    contextualStepBanner('budget', { isComplete: false, budgetDone: false, holdingsDone: false }, false),
+    contextualStepBanner('budget', { isComplete: false, budgetDone: true, holdingsDone: false }, false),
+    contextualStepBanner('transactions', { isComplete: false, budgetDone: true, holdingsDone: false }, false),
+    contextualStepBanner('transactions', { isComplete: true, budgetDone: true, holdingsDone: true }, true),
+    contextualStepBanner('transactions', { isComplete: true, budgetDone: true, holdingsDone: true }, false)
+  ];`, sandbox);
+
+  assert.equal(sandbox.result[0], '');
+  assert.match(sandbox.result[1], /第 1 步：新增一筆生活費/);
+  assert.match(sandbox.result[2], /data-step-action="transactions"/);
+  assert.match(sandbox.result[3], /第 2 步：加入持股資料/);
+  assert.match(sandbox.result[4], /兩項基礎資料已備齊/);
+  assert.match(sandbox.result[4], /data-step-action="overview"/);
+  assert.equal(sandbox.result[5], '', 'completion notice should disappear after its first render');
+  assert.match(sandbox.result[2], /下一步：加入持股資料/);
+  assert.doesNotMatch(sandbox.result[2], /role="status"|is-done/, 'persistent next-step guidance should not look like a fresh success');
+  assert.doesNotMatch(source, /🎯|🎉|✅/, 'onboarding should use the existing vector icon language');
+});
+
+test('completion notice survives incidental rerenders and clears on navigation', () => {
+  const source = fs.readFileSync('app.js', 'utf8');
+  assert.match(source, /announceOnboardingCompletion\s*&&\s*!wasOnboardingComplete\s*&&\s*getOnboardingState\(\)\.isComplete/);
+  assert.match(source, /if\s*\(onboardingCompletedNow\)\s*onboardingCompletionNoticeVisible\s*=\s*true;/);
+  assert.match(source, /function navigateToPage\([\s\S]*?onboardingCompletionNoticeVisible\s*=\s*false;/);
+  const renderSource = source.match(/function render\(\)[\s\S]*?\n\}/)?.[0] || '';
+  assert.doesNotMatch(renderSource, /onboardingCompletionNoticeVisible\s*=\s*false/, 'background rerenders must not consume the visible completion notice');
+  assert.equal((source.match(/load\(\{ announceOnboardingCompletion:true \}\)/g) || []).length, 3, 'only budget save, CSV import, and transaction save should announce completion');
+  assert.equal((source.match(/if\(!onboardingCompleted\)toast/g) || []).length, 3, 'completion banner should replace the competing success toast');
+  assert.match(source, /failures\.length\s*\|\|\s*!automatic\s*\|\|\s*!onboardingCompletionNoticeVisible/, 'successful auto-sync should not compete with the completion announcement');
+});
+
+test('onboarding navigation does not open an unrelated blank budget editor', () => {
+  const source = fs.readFileSync('app.js', 'utf8');
+  const handler = source.match(/document\.querySelectorAll\('\[data-onboarding-action\]'\)[\s\S]*?\n  \}\)\);/)?.[0];
+  assert.ok(handler, 'onboarding action handler should be extractable');
+  assert.doesNotMatch(handler, /startBudgetItem/, 'journey navigation should not auto-open the new-item editor');
+});
+
+test('mobile transaction actions use a two-row hierarchy without narrow equal-width buttons', () => {
+  const styles = fs.readFileSync('styles.css', 'utf8');
+  assert.match(styles, /\.transaction-page-actions\s*\{[^}]*display:\s*grid;[^}]*grid-template-columns:\s*repeat\(2,/s);
+  assert.match(styles, /\.transaction-page-actions \.primary\s*\{[^}]*grid-column:\s*1 \/ -1;/s);
+});
+
+test('styles.css has balanced braces without unclosed selectors', () => {
+  const styles = fs.readFileSync('styles.css', 'utf8');
+  const openCount = (styles.match(/\{/g) || []).length;
+  const closeCount = (styles.match(/\}/g) || []).length;
+  assert.equal(openCount, closeCount, 'number of opening braces must match closing braces in styles.css');
+});
