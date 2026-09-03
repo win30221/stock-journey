@@ -31,6 +31,22 @@ test('manual transaction stock field supports accessible Chinese autocomplete', 
   assert.match(styles, /\.transaction-field\s*\{[^}]*font-size:\s*\.72rem[^}]*font-weight:\s*700/, 'autocomplete field should inherit the same typography as the other form controls');
 });
 
+test('modal content scrolls through its full height on desktop and mobile', () => {
+  const styles = fs.readFileSync('styles.css', 'utf8');
+  const backdropRule = styles.match(/\.modal-backdrop\s*\{([^}]+)\}/)?.[1] || '';
+  const transactionModalRule = styles.match(/\.transaction-modal\s*\{([^}]+)\}/)?.[1] || '';
+  const importModalRule = styles.match(/\.ai-import-modal\s*\{([^}]+)\}/)?.[1] || '';
+
+  assert.match(backdropRule, /min-height:\s*100dvh/);
+  assert.match(backdropRule, /overflow-y:\s*auto/);
+  assert.match(backdropRule, /overscroll-behavior:\s*contain/);
+  assert.match(backdropRule, /-webkit-overflow-scrolling:\s*touch/);
+  assert.match(transactionModalRule, /margin-block:\s*auto/);
+  assert.doesNotMatch(transactionModalRule, /max-height|overflow/);
+  assert.match(importModalRule, /margin-block:\s*auto/);
+  assert.doesNotMatch(importModalRule, /max-height|overflow/);
+});
+
 test('transaction holdings show unrealized amount together with return percentage', () => {
   const source = fs.readFileSync('app.js', 'utf8');
 

@@ -696,8 +696,8 @@ td small { display: block; margin-top: 2px; color: var(--subtle); font-size: .61
 .icon-btn.edit:hover { background: #dbeafe; }
 .icon-btn.delete { color: var(--red); background: #fff1f1; }
 .icon-btn.delete:hover { background: #fee2e2; }
-.modal-backdrop { position: fixed; z-index: 30; inset: 0; display: grid; place-items: center; padding: 20px; background: #172a4a66; backdrop-filter: blur(4px); }
-.transaction-modal { width: min(610px,100%); max-height: calc(100vh - 40px); overflow: auto; padding: 24px; background: #fff; border: 1px solid var(--line); border-radius: 15px; box-shadow: 0 28px 70px #172a4a40; }
+.modal-backdrop { position: fixed; z-index: 30; inset: 0; display: flex; align-items: flex-start; justify-content: center; min-height: 100dvh; padding: 20px; overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; background: #172a4a66; backdrop-filter: blur(4px); }
+.transaction-modal { width: min(610px,100%); margin-block: auto; padding: 24px; background: #fff; border: 1px solid var(--line); border-radius: 15px; box-shadow: 0 28px 70px #172a4a40; }
 .modal-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 21px; }
 .modal-close { width: 36px; height: 36px; color: #526177; background: var(--blue-soft); border: 0; border-radius: 9px; font-size: 1.4rem; line-height: 1; }
 .transaction-form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; }
@@ -733,7 +733,7 @@ td small { display: block; margin-top: 2px; color: var(--subtle); font-size: .61
 .confirmation-actions { display: flex; justify-content: flex-end; gap: 9px; margin-top: 20px; padding-top: 17px; border-top: 1px solid var(--line); }
 .confirmation-submit { color: #fff; background: #b91c1c; border-color: #b91c1c; }
 .confirmation-submit:hover { color: #fff; background: #991b1b; border-color: #991b1b; }
-.ai-import-modal { width: min(660px, 100%); max-height: min(720px, calc(100vh - 40px)); overflow: auto; padding: 24px; background: var(--card); border: 1px solid #d8e3f4; border-radius: 16px; box-shadow: 0 28px 70px rgba(15, 23, 42, .3); }
+.ai-import-modal { width: min(660px, 100%); margin-block: auto; padding: 24px; background: var(--card); border: 1px solid #d8e3f4; border-radius: 16px; box-shadow: 0 28px 70px rgba(15, 23, 42, .3); }
 .ai-import-modal > p { margin: 0 0 14px; color: #526177; font-size: .8rem; line-height: 1.65; }
 .ai-import-prompt { display: block; width: 100%; min-height: 276px; padding: 13px; color: #334155; background: #f8faff; border: 1px solid #cddcf5; border-radius: 10px; font: .73rem/1.6 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; resize: vertical; }
 .ai-import-rules { display: grid; gap: 2px; margin-top: 12px; padding: 10px 12px; color: #66758a; background: #fffaf0; border: 1px solid #f3e1b7; border-radius: 9px; font-size: .7rem; line-height: 1.55; }
@@ -1133,7 +1133,7 @@ td small { display: block; margin-top: 2px; color: var(--subtle); font-size: .61
   .confirmation-actions { display: grid; grid-template-columns: 1fr; }
   .confirmation-actions button { min-height: 44px; }
   .confirmation-actions .confirmation-submit { grid-row: 1; }
-  .ai-import-modal { max-height: calc(100dvh - 28px); padding: 20px; }
+  .ai-import-modal { padding: 20px; }
   .ai-import-prompt { min-height: 250px; font-size: .69rem; }
   .budget-summary-grid { grid-template-columns: 1fr 1fr; gap: 8px; }
   .budget-summary-grid article { min-height: 102px; padding: 13px; }
