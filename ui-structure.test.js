@@ -58,6 +58,44 @@ test('transaction holdings show unrealized amount together with return percentag
   assert.doesNotMatch(source, /<small>目前損益<\/small>/);
 });
 
+test('transaction summaries stay responsive without clipping the disclosure control', () => {
+  const source = fs.readFileSync('app.js', 'utf8');
+  const styles = fs.readFileSync('styles.css', 'utf8');
+
+  assert.match(source, /class="group-metric group-cost"[\s\S]*?平均 \$\{fmtAverageCost\(group\.averageCost\)\}/);
+  assert.match(styles, /@media \(max-width: 1050px\) and \(min-width: 801px\)[\s\S]*?\.group-count\s*\{[^}]*grid-column:\s*4;[^}]*grid-row:\s*1;/);
+  assert.match(styles, /@media \(max-width: 800px\)[\s\S]*?\.group-count\s*\{[^}]*grid-column:\s*2;[^}]*grid-row:\s*1;/);
+  assert.doesNotMatch(styles, /\.transaction-group summary > span:nth-child\(3\).*display:\s*none/);
+});
+
+test('transaction table aligns financial values and keeps actions visible', () => {
+  const styles = fs.readFileSync('styles.css', 'utf8');
+
+  assert.match(styles, /\.transaction-group table\s*\{[^}]*font-variant-numeric:\s*tabular-nums/);
+  assert.match(styles, /\.transaction-group th:nth-child\(n\+3\):nth-child\(-n\+7\), \.transaction-group td:nth-child\(n\+3\):nth-child\(-n\+7\)\s*\{[^}]*text-align:\s*right/);
+  assert.match(styles, /\.transaction-group th:last-child, \.transaction-group td:last-child\s*\{[^}]*position:\s*sticky;[^}]*right:\s*0/);
+});
+
+test('manual transaction form previews total cost while typing', () => {
+  const source = fs.readFileSync('app.js', 'utf8');
+  const styles = fs.readFileSync('styles.css', 'utf8');
+
+  assert.match(source, /class="transaction-cost-preview" role="status" aria-live="polite" aria-atomic="true"/);
+  assert.match(source, /function updateTransactionCostPreview\(\)/);
+  assert.match(source, /output\.textContent=fmt\(quantity\*price\+fee\)/);
+  assert.match(source, /input\.removeAttribute\('aria-invalid'\);updateTransactionCostPreview\(\)/);
+  assert.match(styles, /\.transaction-cost-preview\s*\{/);
+});
+
+test('dividend year control matches the app filter and button hierarchy', () => {
+  const source = fs.readFileSync('app.js', 'utf8');
+  const styles = fs.readFileSync('styles.css', 'utf8');
+
+  assert.match(source, /class="dividend-year-picker"[^>]*>[\s\S]*?<span>顯示年度<\/span>[\s\S]*?id="dividendYear"/);
+  assert.match(source, /class="secondary" data-page="settings">調整計算方式<\/button>/);
+  assert.match(styles, /\.dividend-year-picker\s*\{[^}]*display:\s*grid/);
+});
+
 test('chart event markers stay above the generic blue focus dot', () => {
   const styles = fs.readFileSync('styles.css', 'utf8');
   const focusLayer = styles.match(/\.trend-focus-dot\s*\{[^}]*z-index:\s*(\d+)/)?.[1];

@@ -595,8 +595,9 @@ header { display: flex; justify-content: space-between; align-items: flex-end; g
 .chart .line { fill: none; stroke: var(--blue); stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; }
 .chart-labels { display: flex; justify-content: space-around; gap: 10px; overflow: hidden; color: var(--muted); font-size: .65rem; }
 
-.dividend-actions { display: flex; align-items: center; gap: 10px; }
-.dividend-actions label { color: var(--muted); font-size: .72rem; font-weight: 700; }
+.dividend-actions { display: flex; align-items: flex-end; gap: 10px; }
+.dividend-year-picker { display: grid; gap: 5px; color: var(--muted); font-size: .64rem; font-weight: 700; }
+.dividend-actions .secondary { min-height: 40px; box-shadow: none; }
 .dividend-actions select, .market-stock-picker select, .market-date-picker select, .transaction-form-grid input, .transaction-form-grid select, .setting input, .setting select {
   min-height: 40px;
   padding: 8px 10px;
@@ -664,7 +665,7 @@ header { display: flex; justify-content: space-between; align-items: flex-end; g
 .transactions-panel { overflow: visible; }
 .transaction-groups { display: grid; gap: 11px; }
 .transaction-group { overflow: hidden; box-shadow: none; }
-.transaction-group summary { display: grid; grid-template-columns: minmax(130px,1.3fr) repeat(6,minmax(95px,1fr)) auto; align-items: center; gap: 18px; padding: 15px 17px; list-style: none; cursor: pointer; }
+.transaction-group summary { display: grid; grid-template-columns: minmax(115px,1.25fr) repeat(5,minmax(88px,1fr)) auto; align-items: center; gap: 12px; padding: 15px 17px; list-style: none; cursor: pointer; }
 .transaction-group summary::-webkit-details-marker, .price-card summary::-webkit-details-marker { display: none; }
 .transaction-group summary:hover { background: #f8faff; }
 .transaction-group[open] summary { background: #f1f5ff; border-bottom: 1px solid var(--line); }
@@ -683,7 +684,11 @@ table { width: 100%; border-collapse: collapse; font-size: .77rem; text-align: l
 th { padding: 10px 12px; color: var(--muted); background: #fafcff; border-bottom: 1px solid var(--line); font-size: .67rem; font-weight: 650; }
 td { padding: 13px 12px; border-bottom: 1px solid #edf2fa; }
 td small { display: block; margin-top: 2px; color: var(--subtle); font-size: .61rem; }
-.transaction-group table { min-width: 850px; }
+.transaction-group table { min-width: 820px; font-variant-numeric: tabular-nums; }
+.transaction-group th:nth-child(n+3):nth-child(-n+7), .transaction-group td:nth-child(n+3):nth-child(-n+7) { text-align: right; }
+.transaction-group th:last-child, .transaction-group td:last-child { position: sticky; right: 0; text-align: center; }
+.transaction-group th:last-child { z-index: 2; box-shadow: -8px 0 12px -12px #18365f80; }
+.transaction-group td:last-child { z-index: 1; background: #fff; box-shadow: -8px 0 12px -12px #18365f80; }
 .return-amount, .return-value { font-variant-numeric: tabular-nums; white-space: nowrap; }
 .return-percent { font-size: .65rem; font-weight: 650; }
 .return-value b { display: block; font-size: .76rem; }
@@ -721,6 +726,11 @@ td small { display: block; margin-top: 2px; color: var(--subtle); font-size: .61
 .form-error { margin-bottom: 16px; padding: 11px 13px; color: #8f2418; background: #fef3f2; border: 1px solid #fecdca; border-radius: 9px; font-size: .75rem; font-weight: 700; line-height: 1.5; }
 .form-error[hidden] { display: none; }
 .form-hint { margin: 16px 0; color: var(--muted); font-size: .71rem; }
+.transaction-cost-preview { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin: 16px 0; padding: 13px 15px; background: var(--blue-wash); border: 1px solid #c8dcfb; border-radius: 10px; }
+.transaction-cost-preview > div { display: grid; gap: 2px; }
+.transaction-cost-preview span { color: var(--muted); font-size: .68rem; }
+.transaction-cost-preview strong { color: var(--blue-strong); font-size: 1rem; font-variant-numeric: tabular-nums; }
+.transaction-cost-preview > small { color: #5270a7; font-size: .67rem; text-align: right; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 9px; padding-top: 17px; border-top: 1px solid var(--line); }
 .confirmation-backdrop { position: fixed; z-index: 60; inset: 0; display: grid; place-items: center; padding: 20px; background: rgba(15, 23, 42, .56); backdrop-filter: blur(5px); }
 .confirmation-modal { width: min(460px, 100%); padding: 24px; background: var(--card); border: 1px solid #d8e3f4; border-radius: 16px; box-shadow: 0 28px 70px rgba(15, 23, 42, .3); }
@@ -960,6 +970,17 @@ td small { display: block; margin-top: 2px; color: var(--subtle); font-size: .61
   .budget-form-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
+@media (max-width: 1050px) and (min-width: 801px) {
+  .transaction-group summary { grid-template-columns: minmax(115px,1.2fr) repeat(2,minmax(100px,1fr)) auto; gap: 10px 14px; }
+  .group-symbol { grid-column: 1; grid-row: 1; }
+  .group-quantity { grid-column: 2; grid-row: 1; }
+  .group-cost { grid-column: 3; grid-row: 1; }
+  .group-count { grid-column: 4; grid-row: 1; }
+  .group-latest { grid-column: 1; grid-row: 2; }
+  .group-market-value { grid-column: 2; grid-row: 2; }
+  .group-return { grid-column: 3 / 5; grid-row: 2; }
+}
+
 @media (max-width: 800px) {
   .shell { display: block; }
   aside { position: sticky; z-index: 40; top: 0; width: 100%; height: auto; display: block; padding: 9px 14px; border-right: 0; border-bottom: 1px solid var(--line); box-shadow: 0 4px 14px rgba(37, 99, 235, .06); backdrop-filter: none; }
@@ -1042,8 +1063,13 @@ td small { display: block; margin-top: 2px; color: var(--subtle); font-size: .61
   .transaction-page-actions button { min-width: 0; min-height: 44px; white-space: nowrap; }
   .transaction-page-actions .primary { grid-column: 1 / -1; }
   .transaction-import-help { text-align: left; }
-  .transaction-group summary > span:nth-child(3), .transaction-group summary > span:nth-child(4) { display: none; }
+  .group-symbol { grid-column: 1; grid-row: 1; }
   .group-count { grid-column: 2; grid-row: 1; align-self: start; }
+  .group-quantity { grid-column: 1; grid-row: 2; }
+  .group-market-value { grid-column: 2; grid-row: 2; }
+  .group-cost { grid-column: 1; grid-row: 3; }
+  .group-return { grid-column: 2; grid-row: 3; }
+  .group-latest { grid-column: 1 / -1; grid-row: 4; }
   .group-actions { align-items: stretch; flex-direction: column; gap: 9px; padding: 12px 14px; }
   .group-delete { width: 100%; }
   .icon-btn { width: 44px; height: 44px; }
@@ -1125,6 +1151,8 @@ td small { display: block; margin-top: 2px; color: var(--subtle); font-size: .61
   .dividend-actions { display: grid; grid-template-columns: auto 1fr; align-items: center; }
   .dividend-actions select { width: 100%; }
   .dividend-actions button { grid-column: 1 / -1; min-height: 44px; justify-self: stretch; }
+  .transaction-cost-preview { align-items: flex-start; flex-direction: column; }
+  .transaction-cost-preview > small { text-align: left; }
   .market-stock-picker, .market-date-picker { align-items: stretch; flex-direction: column; }
   .modal-actions { display: grid; grid-template-columns: 1fr 1fr; }
   .modal-actions button { min-height: 44px; }
