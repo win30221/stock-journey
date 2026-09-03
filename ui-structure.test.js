@@ -1,6 +1,7 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const test = require('node:test');
+const vm = require('node:vm');
 
 test('settings and transaction actions avoid legacy string slicing and duplicate IDs', () => {
   const source = fs.readFileSync('app.js', 'utf8');
@@ -31,6 +32,52 @@ test('chart event markers stay above the generic blue focus dot', () => {
   assert.ok(focusLayer, 'trend focus dot should define its layer');
   assert.ok(markerLayer, 'trend event marker should define its layer');
   assert.ok(Number(markerLayer) > Number(focusLayer), 'semantic marker color must not be covered by the focus dot');
+});
+
+test('navigation uses a complete selected surface without edge indicators', () => {
+  const styles = fs.readFileSync('styles.css', 'utf8');
+  const desktopActiveRule = styles.match(/^nav button\.active\s*\{([^}]+)\}/m)?.[1] || '';
+  const mobileStyles = styles.match(/@media \(max-width: 800px\) \{([\s\S]*?)\n\}/)?.[1] || '';
+  const activeRule = mobileStyles.match(/nav button\.active\s*\{([^}]+)\}/)?.[1] || '';
+
+  assert.match(desktopActiveRule, /box-shadow:\s*none/);
+  assert.doesNotMatch(desktopActiveRule, /inset/);
+  assert.match(activeRule, /border-color:/);
+  assert.match(activeRule, /box-shadow:\s*none/);
+  assert.doesNotMatch(activeRule, /inset\s+0\s+-3px/);
+});
+
+test('page navigation moves to the top without focus-induced scrolling', () => {
+  const source = fs.readFileSync('app.js', 'utf8');
+  const transition = source.match(/function renderPageAtTop\(\) \{([\s\S]*?)\n\}/)?.[1] || '';
+
+  assert.ok(transition.indexOf('scrollTo?.(0, 0)') < transition.indexOf('render()'));
+  assert.match(transition, /focus\(\{ preventScroll:true \}\)/);
+  assert.match(source, /function navigateToPage[\s\S]*?renderPageAtTop\(\)/);
+  assert.match(source, /function syncPageFromHash[\s\S]*?renderPageAtTop\(\)/);
+});
+
+test('mobile navigation remains visible while the page scrolls', () => {
+  const styles = fs.readFileSync('styles.css', 'utf8');
+  const mobileStyles = styles.match(/@media \(max-width: 800px\) \{([\s\S]*?)\n\}/)?.[1] || '';
+  const asideRule = mobileStyles.match(/aside\s*\{([^}]+)\}/)?.[1] || '';
+
+  assert.match(asideRule, /position:\s*sticky/);
+  assert.match(asideRule, /top:\s*0/);
+  assert.match(asideRule, /z-index:\s*40/);
+});
+
+test('mobile navigation opens as an accessible side drawer', () => {
+  const source = fs.readFileSync('app.js', 'utf8');
+  const styles = fs.readFileSync('styles.css', 'utf8');
+
+  assert.match(source, /class="mobile-menu-toggle"[^>]+aria-label="開啟菜單"[^>]+aria-controls="mobileNavigationPanel"[^>]+aria-expanded="false"/);
+  assert.doesNotMatch(source, /class="mobile-menu-toggle"[^>]*>[\s\S]*?<span>菜單<\/span>/);
+  assert.match(source, /class="mobile-nav-close"[^>]+aria-label="關閉菜單"/);
+  assert.match(source, /backdrop\.addEventListener\('click',\(\)=>setOpen\(false,true\)\)/);
+  assert.match(source, /panel\.inert=!open/);
+  assert.match(styles, /\.mobile-nav-panel\s*\{[^}]*position:\s*fixed[^}]*transform:\s*translateX\(-105%\)/);
+  assert.match(styles, /aside\.mobile-nav-is-open \.mobile-nav-panel\s*\{[^}]*transform:\s*translateX\(0\)/);
 });
 
 test('chart labels stay readable above markers while the active tooltip stays foremost', () => {
@@ -65,4 +112,54 @@ test('silver gain milestone grows with the selected data point and keyboard focu
   assert.ok(silverInteractionRule, 'silver milestones should define selected-point and focus-visible feedback');
   assert.match(silverInteractionRule, /width:\s*23px/);
   assert.match(silverInteractionRule, /height:\s*23px/);
+});
+
+test('mobile asset chart keeps labels readable and details below the plot', () => {
+  const source = fs.readFileSync('app.js', 'utf8');
+  const styles = fs.readFileSync('styles.css', 'utf8');
+  const mobileStyles = styles.match(/@media \(max-width: 520px\) \{([\s\S]*?)\n\}/)?.[1] || '';
+
+  assert.match(source, /trendChartMetrics[\s\S]*?left:82/);
+  assert.match(source, /function trendAxisLabelIndexes[\s\S]*?isCompactTrendChart\(\)\?3:6/);
+  assert.match(source, /class="trend-chart-visual"[\s\S]*?id="trendTooltip"/);
+  assert.match(source, /tabindex="0" aria-label="持股資產走勢圖，可使用左右方向鍵查看各日期"/);
+  assert.match(mobileStyles, /\.trend-tooltip\s*\{[^}]*position:\s*relative[^}]*width:\s*100%/);
+  assert.match(mobileStyles, /\.trend-event-halo\s*\{[^}]*width:\s*20px[^}]*height:\s*20px/);
+  assert.match(mobileStyles, /\.trend-navigator-wrap\s*\{[^}]*display:\s*block/);
+  assert.match(mobileStyles, /\.navigator-handle\s*\{[^}]*width:\s*44px[^}]*height:\s*48px/);
+  assert.match(source, /function trendNavigatorDragMode[\s\S]*?edgeZone=Math\.min\(18,selectionRect\.width\/2\)/);
+  assert.match(source, /return 'move';\}if\(handleEdge&&compact\)/);
+  assert.match(source, /function compactMilestoneLabels[\s\S]*?selected\.slice\(0,3\)/);
+  assert.match(source, /function milestoneLabelIndexes[\s\S]*?compactMilestoneLabels\(points\)/);
+  assert.match(source, /minLeft=compact\?18:8,maxLeft=compact\?82:92/);
+  assert.match(mobileStyles, /\.trend-milestone-label\s*\{[^}]*display:\s*block[^}]*min-width:\s*92px/);
+  assert.doesNotMatch(mobileStyles, /\.trend-milestone-label\s*\{[^}]*display:\s*none/);
+});
+
+test('mobile milestone labels prioritize both categories and one spaced history point', () => {
+  const source = fs.readFileSync('app.js', 'utf8');
+  const functionSource = source.match(/function compactMilestoneLabels[^\n]+/)?.[0];
+  const sandbox = { visibleTrendMilestones:milestones => milestones || [] };
+  const points = Array.from({length:12},() => ({milestones:[]}));
+  points[2].milestones = [{kind:'asset'}];
+  points[8].milestones = [{kind:'asset'}];
+  points[10].milestones = [{kind:'gain'}];
+  points[11].milestones = [{kind:'asset'}];
+  sandbox.points = points;
+  vm.runInNewContext(`${functionSource}; result = compactMilestoneLabels(points);`, sandbox);
+
+  assert.deepEqual(Array.from(sandbox.result, item => `${item.index}:${item.kind}`), ['11:asset','10:gain','8:asset']);
+});
+
+test('mobile navigator reserves its center for moving the selected range', () => {
+  const source = fs.readFileSync('app.js', 'utf8');
+  const functionSource = source.match(/function trendNavigatorDragMode[^\n]+/)?.[0];
+  const sandbox = { isCompactTrendChart:() => true };
+  vm.runInNewContext(`${functionSource}; result = [
+    trendNavigatorDragMode({clientX:50,selectionRect:{left:20,right:80,width:60},handleEdge:'end',compact:false}),
+    trendNavigatorDragMode({clientX:24,selectionRect:{left:20,right:80,width:60},handleEdge:'start',compact:false}),
+    trendNavigatorDragMode({clientX:76,selectionRect:{left:20,right:80,width:60},handleEdge:'end',compact:false})
+  ];`, sandbox);
+
+  assert.deepEqual(Array.from(sandbox.result), ['move','start','end']);
 });
