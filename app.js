@@ -1,0 +1,869 @@
+import { ACQUISITIONS, APP_VERSION, BACKUP_SCHEMA_VERSION, MARKET_RETRY_BASE_MINUTES, TREND_EVENT_MARKER_SETTINGS } from './js/lib/constants.js';
+import { escapeHtml, fmt, fmtAverageCost, fmtPerShare, fmtSignedMoney, money } from './js/lib/format.js';
+import { isWaitingForTodayClose, isWeekday, marketTargetDate as resolveMarketTargetDate, shiftDate, taipeiClock, today, uid } from './js/lib/date.js';
+import { calculateHoldingGroups, calculatePortfolioMetrics, calculateTransactionCost, calculateUnrealizedReturn } from './js/domain/portfolio.js';
+import { calculateAnnualBudget, calculateBudgetSummary } from './js/domain/retirement.js';
+import { calculateDividendReceipts, calculateStockDividendChecks, quantityAtDate, summarizeDividends } from './js/domain/dividends.js';
+import { checkedThrough, createMarketSyncPlan, dateMin, dividendKey, firstMarketDate, lastMarketDate, mergeRows } from './js/domain/market.js';
+import { validateBackupPayload } from './js/domain/backup.js';
+import { isIsoCalendarDate, planCsvTransactionImport } from './js/domain/transaction-import.js';
+import { budgetItemRepository, budgetPlanRepository, marketCacheRepository, replaceBrowserData, settingsRepository, transactionRepository } from './js/repositories/browser.js';
+import { fetchFinMindData } from './js/services/finmind.js';
+import { confirmDestructive } from './js/components/confirmation.js';
+import { toast } from './js/components/toast.js';
+import { hashForPage, pageFromHash } from './js/app/router.js';
+
+let transactions = [], marketCaches = [], budgetPlans = [], budgetItems = [], syncProgress = '', settings = { id: 'default', monthlyExpenseTarget: 0, dividendDateBasis: 'PAYMENT_DATE', trendTooltipEventLimit: 3, showTotalAsset: true, showTotalReturn: true, gainMilestoneInterval: 1000000, showNewStockMarker: true, showManualBuyMarker: true, showRecurringInvestmentMarker: true, showDividendReinvestmentMarker: true, showStockDividendMarker: true, lastSuccessfulMarketSyncDate: null, lastMarketSyncAttemptDate: null, marketAutoSyncPausedUntil: null }, page = pageFromHash(globalThis.location?.hash), transactionModalOpen = false, dividendYear = null, marketSymbol = null, marketPriceMonth = null, autoSyncInProgress = false, marketSyncInProgress = false, marketSyncTimer = null, marketTradingDates = [], marketCalendarLoaded = false, marketCalendarRetryAfter = null;
+let trendState = { frequency: 'month', range: 'all', start: null, end: null }, trendDetailDate = null;
+let budgetEditId = null, budgetEditorOpen = false, budgetDraft = null, budgetUndoItem = null, budgetUndoTimer = null, transactionEditId = null, transactionUndoRows = [], transactionUndoTimer = null, aiImportGuideOpen = false;
+const root = document.querySelector('#root');
+function marketTargetDate(now = new Date(), tradingDates = marketTradingDates) { return resolveMarketTargetDate(now, tradingDates); }
+function canonicaliseRoute() {
+  page = pageFromHash(globalThis.location?.hash);
+  const expectedHash = hashForPage(page);
+  if (globalThis.location?.hash === expectedHash) return;
+  try {
+    if (globalThis.history?.replaceState) globalThis.history.replaceState(null, '', expectedHash);
+    else if (globalThis.location) globalThis.location.hash = expectedHash;
+  } catch { globalThis.location.hash = expectedHash; }
+}
+function navigateToPage(nextPage) {
+  const nextHash = hashForPage(nextPage);
+  page = pageFromHash(nextHash);
+  if (globalThis.location?.hash !== nextHash) globalThis.location.hash = nextHash;
+  render();
+  document.querySelector('#main-content')?.focus();
+}
+function syncPageFromHash() {
+  const nextPage = pageFromHash(globalThis.location?.hash);
+  const canonicalHash = hashForPage(nextPage);
+  if (globalThis.location?.hash !== canonicalHash) {
+    try {
+      if (globalThis.history?.replaceState) globalThis.history.replaceState(null, '', canonicalHash);
+      else if (globalThis.location) globalThis.location.hash = canonicalHash;
+    } catch { globalThis.location.hash = canonicalHash; }
+  }
+  if (page === nextPage) return;
+  page = nextPage;
+  render();
+  document.querySelector('#main-content')?.focus();
+}
+const PAGE_LABELS = {
+  overview: '投資總覽',
+  budget: '退休規劃',
+  transactions: '持股與交易',
+  dividends: '股息現金流',
+  'market-data': '市場資料',
+  settings: '設定',
+};
+async function load() {
+  try {
+    const [savedTransactions, savedMarketCaches, savedSettings, savedBudgetPlans, savedBudgetItems] = await Promise.all([
+      transactionRepository.list(), marketCacheRepository.list(), settingsRepository.first(), budgetPlanRepository.list(), budgetItemRepository.list(),
+    ]);
+    transactions = savedTransactions;
+    marketCaches = savedMarketCaches;
+    budgetPlans = savedBudgetPlans;
+    budgetItems = savedBudgetItems;
+    if (savedSettings) settings = { ...settings, ...savedSettings, id:savedSettings.id || 'default', monthlyExpenseTarget:savedSettings.monthlyExpenseTarget ?? 0, dividendDateBasis:savedSettings.dividendDateBasis || 'PAYMENT_DATE', trendTooltipEventLimit:normaliseTrendTooltipEventLimit(savedSettings.trendTooltipEventLimit), lastSuccessfulMarketSyncDate:savedSettings.lastSuccessfulMarketSyncDate || null, lastMarketSyncAttemptDate:savedSettings.lastMarketSyncAttemptDate || null, marketAutoSyncPausedUntil:savedSettings.marketAutoSyncPausedUntil || null };
+    const starterItems = budgetItems.filter(item => item.isStarter === true);
+    if (starterItems.length) { await budgetItemRepository.removeMany(starterItems.map(item=>item.id)); budgetItems=budgetItems.filter(item=>item.isStarter!==true); }
+    const normalisedItems = normalisedBudgetItems();
+    const currentById = new Map(budgetItems.map(item => [item.id, item]));
+    const changedItems = normalisedItems.filter(item => Number(currentById.get(item.id)?.sortOrder) !== item.sortOrder);
+    if (changedItems.length) await budgetItemRepository.saveMany(changedItems);
+    budgetItems = normalisedItems;
+    const plan = budgetPlans[0];
+    if (!plan) await seedBudgetPlan();
+    else if (plan.source === 'LEGACY_MONTHLY_TARGET') { const migrated={...plan,source:'ITEMIZED',updatedAt:new Date().toISOString()}; await budgetPlanRepository.save(migrated); budgetPlans=[migrated]; }
+    canonicaliseRoute(); render(); scheduleMarketSyncCheck(); void maybeAutoSyncMarket();
+  } catch (error) {
+    root.innerHTML = `<section class="load-error"><h1>無法載入儀表板</h1><p>${escapeHtml(error.message || '瀏覽器阻擋了本機儲存功能。')}</p><button onclick="location.reload()">重新載入</button></section>`;
+  }
+}
+function cost(transaction) { return calculateTransactionCost(transaction); }
+function grouped() { return calculateHoldingGroups(transactions); }
+function cacheFor(symbol) { return marketCaches.find(c => c.symbol === symbol); }
+function marketCacheDisplayRows(summary = marketSyncSummary()) {
+  const heldSymbols=new Set(summary.symbols);
+  return [...marketCaches].map(cache=>{
+    const cachedOnly=!heldSymbols.has(cache.symbol), suffix=cachedOnly?'（無持股・快取保留）':'';
+    return {...cache,cachedOnly,name:cache.name?`${cache.name}${suffix}`:cachedOnly?'無持股・快取保留':null};
+  }).sort((a,b)=>a.symbol.localeCompare(b.symbol));
+}
+function lastPrice(symbol) { const prices = cacheFor(symbol)?.prices || []; return [...prices].sort((a,b)=>b.date.localeCompare(a.date))[0] || null; }
+function latestMarketDate() { return marketCaches.flatMap(cache => cache.prices || []).reduce((latest, price) => !latest || price.date > latest ? price.date : latest, null); }
+function earliestTransactionDate(symbol) { return transactions.filter(row=>row.symbol===symbol).reduce((first,row)=>!first||row.date<first?row.date:first,null); }
+function retryAvailable(cache, now = new Date()) { return !cache?.retryAfter || new Date(cache.retryAfter)<=now; }
+function isMarketAutoSyncPaused(now = new Date()) { return Boolean(settings.marketAutoSyncPausedUntil)&&new Date(settings.marketAutoSyncPausedUntil)>now; }
+function symbolNeedsMarketSync(symbol, target = marketTargetDate(), now = new Date()) {
+  const cache=cacheFor(symbol), earliest=earliestTransactionDate(symbol), priceFrom=cache?.priceCoverageFrom||firstMarketDate(cache);
+  if (!cache || !(cache.prices || []).length || !checkedThrough(cache,'price') || !checkedThrough(cache,'dividend')) return retryAvailable(cache,now);
+  if ((earliest&&priceFrom&&earliest<priceFrom) || checkedThrough(cache,'price')<target || checkedThrough(cache,'dividend')<target) return retryAvailable(cache,now);
+  return Boolean(cache.syncErrors?.length) && retryAvailable(cache,now);
+}
+function marketSyncSummary(now = new Date()) {
+  const symbols=[...new Set(transactions.map(row=>row.symbol))], target=marketTargetDate(now), waiting=isWaitingForTodayClose(now);
+  const rows=symbols.map(symbol=>{const cache=cacheFor(symbol),hasPrice=Boolean(lastMarketDate(cache)),priceReady=hasPrice&&Boolean(checkedThrough(cache,'price'))&&checkedThrough(cache,'price')>=target,dividendReady=Boolean(checkedThrough(cache,'dividend'))&&checkedThrough(cache,'dividend')>=target;return {symbol,cache,hasPrice,priceReady,dividendReady,errors:cache?.syncErrors||[]};});
+  const priceCount=rows.filter(row=>row.hasPrice).length, readyCount=rows.filter(row=>row.priceReady&&row.dividendReady&&!row.errors.length).length, errorCount=rows.filter(row=>row.errors.length).length;
+  const state=marketSyncInProgress?'SYNCING':!symbols.length?'EMPTY':errorCount?'PARTIAL':readyCount===symbols.length?(waiting?'WAITING_FOR_CLOSE':'READY'):priceCount?'STALE':'PENDING';
+  return {symbols,rows,target,waiting,priceCount,readyCount,errorCount,state,latestDate:latestMarketDate()};
+}
+function marketHeaderLabel(summary = marketSyncSummary()) {
+  if (!summary.symbols.length) return '尚未匯入持股';
+  if (summary.state==='SYNCING') return syncProgress||'市場資料更新中';
+  if (isMarketAutoSyncPaused()&&!summary.latestDate) return '市場快取已清除 · 等待下次排程或手動同步';
+  if (!summary.latestDate) return summary.errorCount?'市場資料同步失敗，可手動重試':'市場資料準備同步';
+  const date=summary.latestDate.replaceAll('-','/');
+  if (summary.state==='WAITING_FOR_CLOSE') return `截至 ${date} 收盤 · 今日資料約 18:00 更新`;
+  if (['PARTIAL','STALE','PENDING'].includes(summary.state)) return `截至 ${date} 收盤 · 部分資料待更新`;
+  return `截至 ${date} 收盤`;
+}
+function quantityAt(symbol, date) { return quantityAtDate(transactions, symbol, date); }
+function dividendReceipts() { return calculateDividendReceipts({ transactions, marketCaches, dateBasis:settings.dividendDateBasis }); }
+function stockDividendCheck() { return calculateStockDividendChecks(transactions, marketCaches); }
+function dividendSummary() { return summarizeDividends(dividendReceipts(), transactions, new Date(), today()); }
+function isUpcomingDividend(row) { return (row.paymentDate || row.basis) > today(); }
+function metrics() { const div=dividendSummary(); return { ...calculatePortfolioMetrics(grouped(), lastPrice, div.rows), div }; }
+function card(label, value, hint, accent='', showInfo=true) { return `<article class="metric ${accent}"><p>${label}${showInfo ? `<button class="info" title="${hint}">i</button>` : ''}</p><strong>${value}</strong><small>${hint}</small></article>`; }
+async function ensureMarketCalendar() {
+  if (marketCalendarLoaded) return marketTradingDates;
+  if (marketCalendarRetryAfter&&new Date(marketCalendarRetryAfter)>new Date()) return marketTradingDates;
+  try {
+    const dates=(await fetchFinMindData('TaiwanStockTradingDate')).map(row=>row.date).filter(date=>/^\d{4}-\d{2}-\d{2}$/.test(date));
+    if (!dates.length) throw Error('交易日曆沒有資料');
+    marketTradingDates=dates;marketCalendarLoaded=true;marketCalendarRetryAfter=null;
+  } catch (error) { marketCalendarRetryAfter=new Date(Date.now()+MARKET_RETRY_BASE_MINUTES*60000).toISOString();console.warn('Trading calendar sync failed; using weekday fallback:',error.message); }
+  return marketTradingDates;
+}
+function marketSyncPlan(symbol, target, force = false) {
+  return createMarketSyncPlan({ cache:cacheFor(symbol)||{}, transactionStart:earliestTransactionDate(symbol), target, force });
+}
+function nextMarketBoundary(now = new Date()) {
+  const clock=taipeiClock(now), todayBoundary=new Date(Date.UTC(clock.year,clock.month-1,clock.day,10,5));
+  if (isWeekday(clock.date)&&todayBoundary>now) return todayBoundary;
+  let next=shiftDate(clock.date,1);while(!isWeekday(next))next=shiftDate(next,1);
+  const [year,month,day]=next.split('-').map(Number);return new Date(Date.UTC(year,month-1,day,10,5));
+}
+function scheduleMarketSyncCheck() {
+  clearTimeout(marketSyncTimer);
+  const now=new Date(), retryDates=[marketCalendarRetryAfter,...marketCaches.map(cache=>cache.retryAfter)].map(value=>value&&new Date(value)).filter(date=>date&&date>now), candidates=[nextMarketBoundary(now),...retryDates].sort((a,b)=>a-b), delay=Math.max(15000,candidates[0]-now);
+  marketSyncTimer=setTimeout(async()=>{await maybeAutoSyncMarket();scheduleMarketSyncCheck();},Math.min(delay,2147483647));
+}
+async function maybeAutoSyncMarket() {
+  if (!transactions.length||isMarketAutoSyncPaused()) return;
+  const previousTarget=marketTargetDate();
+  await ensureMarketCalendar();
+  const target=marketTargetDate(), symbols=[...new Set(transactions.map(row=>row.symbol))];
+  if (target!==previousTarget&&!marketSyncInProgress) render();
+  if (autoSyncInProgress || marketSyncInProgress || !symbols.some(symbol=>symbolNeedsMarketSync(symbol,target))) return;
+  autoSyncInProgress = true;
+  try { await syncMarket({ automatic: true }); } finally { autoSyncInProgress = false; }
+}
+async function syncMarket(options = {}) {
+  const automatic=Boolean(options?.automatic);
+  if (marketSyncInProgress) return;
+  const allSymbols=[...new Set(transactions.map(t=>t.symbol))];
+  if (!allSymbols.length) return toast('請先匯入交易紀錄');
+  if (!automatic&&settings.marketAutoSyncPausedUntil) { settings={...settings,marketAutoSyncPausedUntil:null};await settingsRepository.save(settings); }
+  await ensureMarketCalendar();
+  const target=marketTargetDate(), symbols=automatic?allSymbols.filter(symbol=>symbolNeedsMarketSync(symbol,target)):allSymbols;
+  if (!symbols.length) return;
+  marketSyncInProgress = true;
+  syncProgress=`市場資料更新中：0 / ${symbols.length}`;
+  render();
+  let completed = 0, failures = [];
+  try {
+    let infoRows = [];
+    if (symbols.some(symbol => !cacheFor(symbol)?.name)) {
+      try { infoRows = await fetchFinMindData('TaiwanStockInfo'); }
+      catch (error) { console.warn('Stock info sync failed:', error.message); }
+    }
+    const infoBySymbol = new Map(infoRows.map(row => [String(row.stock_id), row]));
+    for (const symbol of symbols) {
+      syncProgress = `市場資料更新中：${completed + 1} / ${symbols.length}（${symbol}）`; render();
+      const plan=marketSyncPlan(symbol,target,!automatic), existing=plan.cache, attemptedAt=new Date().toISOString();
+      const [priceResult, dividendResult] = await Promise.allSettled([
+        plan.priceNeeded ? fetchFinMindData('TaiwanStockPrice',symbol,plan.priceStart,target) : Promise.resolve(null),
+        plan.dividendNeeded ? fetchFinMindData('TaiwanStockDividend',symbol,plan.dividendStart,target) : Promise.resolve(null),
+      ]);
+      const failedParts = [];
+      let prices = existing.prices || [], dividends = existing.dividends || [];
+      let priceCoverageFrom=existing.priceCoverageFrom||firstMarketDate(existing), priceCheckedThrough=checkedThrough(existing,'price'), dividendCoverageFrom=existing.dividendCoverageFrom||null, dividendCheckedThrough=checkedThrough(existing,'dividend');
+      if (plan.priceNeeded&&priceResult.status === 'fulfilled') {
+        const incoming=priceResult.value.filter(r=>r.date && r.close != null).map(r=>({date:r.date, close:Number(r.close), open:r.open, high:r.max, low:r.min, volume:r.Trading_Volume}));
+        prices=mergeRows(prices,incoming,row=>row.date);priceCoverageFrom=dateMin(priceCoverageFrom,plan.priceStart);priceCheckedThrough=target;
+        if (!prices.length) failedParts.push('價格：查無可用收盤資料');
+      } else if (plan.priceNeeded) failedParts.push(`價格：${priceResult.reason?.message || '同步失敗'}`);
+      if (plan.dividendNeeded&&dividendResult.status === 'fulfilled') {
+        const incoming=dividendResult.value.map((r,i)=>({
+          id:`${symbol}-${r.CashExDividendTradingDate || ''}-${r.CashDividendPaymentDate || ''}-${r.AnnouncementDate || r.date || i}`,
+          cash:Number(r.CashEarningsDistribution || 0), stock:Number(r.StockEarningsDistribution || 0), exDate:r.CashExDividendTradingDate || null,
+          paymentDate:r.CashDividendPaymentDate || null, announcementDate:r.AnnouncementDate || r.date || null,
+        })).filter(r=>r.cash > 0||r.stock > 0);
+        dividends=mergeRows(dividends,incoming,dividendKey);dividendCoverageFrom=dateMin(dividendCoverageFrom,plan.dividendStart);dividendCheckedThrough=target;
+      } else if (plan.dividendNeeded) failedParts.push(`股息：${dividendResult.reason?.message || '同步失敗'}`);
+      const info = infoBySymbol.get(symbol) || {};
+      const retryCount=failedParts.length?Number(existing.retryCount||0)+1:0, retryAfter=failedParts.length?new Date(Date.now()+Math.min(60,MARKET_RETRY_BASE_MINUTES*2**Math.max(0,retryCount-1))*60000).toISOString():null;
+      await marketCacheRepository.save({...existing,id:`finmind:${symbol}`,symbol,prices,dividends,name:info.stock_name || existing.name || null,securityType:info.type || existing.securityType || null,source:'FINMIND',priceCoverageFrom,priceCheckedThrough,dividendCoverageFrom,dividendCheckedThrough,lastAttemptAt:attemptedAt,lastSuccessAt:failedParts.length?existing.lastSuccessAt||null:attemptedAt,syncedAt:failedParts.length?existing.syncedAt||null:attemptedAt,syncStatus:failedParts.length?(prices.length?'PARTIAL':'ERROR'):'READY',syncErrors:failedParts,retryCount,retryAfter});
+      if (failedParts.length) failures.push(`${symbol}（${failedParts.join('；')}）`);
+      completed++;
+    }
+    settings = { ...settings, marketAutoSyncPausedUntil:null, lastMarketSyncAttemptDate: today(), lastSuccessfulMarketSyncDate: failures.length ? settings.lastSuccessfulMarketSyncDate : today() };
+    await settingsRepository.save(settings);
+    syncProgress='';marketSyncInProgress=false;await load();
+    const quotaLimited = failures.some(message => message.includes('免費 API 額度已用完'));
+    const closeNote=isWaitingForTodayClose()?'；今日資料約 18:00 後更新':'';
+    toast(failures.length ? (quotaLimited ? 'FinMind 額度已用完；已保留成功取得的資料，系統稍後重試' : `完成，但 ${failures.length} 檔有資料未更新，系統稍後重試`) : automatic ? `已自動同步 ${symbols.length} 檔市場資料${closeNote}` : `已同步 ${symbols.length} 檔市場資料${closeNote}`);
+    if (failures.length) console.warn('Market sync failures:', failures);
+  } finally {
+    syncProgress = '';
+    marketSyncInProgress = false;
+  }
+}
+const BUDGET_CATEGORIES = { FOOD:'飲食', CLOTHING_DAILY:'衣著日用', HOUSING:'居住', TRANSPORT:'交通', HEALTHCARE:'醫療健康', INSURANCE_TAX:'保險稅務', LEARNING:'學習成長', LEISURE:'休閒娛樂', FAMILY_SOCIAL:'家庭人情', REPLACEMENT:'耐用品汰換', OTHER:'其他' };
+const BUDGET_FREQUENCIES = { DAILY:'每日', WEEKLY:'每週', MONTHLY:'每月', BIMONTHLY:'每 2 個月', QUARTERLY:'每季', SEMIANNUAL:'每半年', ANNUAL:'每年', EVERY_N_MONTHS:'自訂：每隔幾個月', EVERY_N_YEARS:'自訂：每隔幾年' };
+const BUDGET_SUGGESTIONS = [
+  {category:'HOUSING',name:'房租／房貸與管理費'}, {category:'HEALTHCARE',name:'醫療與健康檢查'}, {category:'INSURANCE_TAX',name:'保險與稅金'}, {category:'REPLACEMENT',name:'手機、電腦與家電汰換'}, {category:'TRANSPORT',name:'交通工具保養與維修'}, {category:'FAMILY_SOCIAL',name:'家庭支援與人情往來'}
+];
+async function seedBudgetPlan() {
+  const now=new Date().toISOString(), plan={ id:'default', name:'我的退休生活預算', currency:'TWD', bufferRateBps:0, selectedTarget:'NEEDS_AND_WANTS', source:'ITEMIZED', completenessReminderDismissedAt:null, createdAt:now, updatedAt:now };
+  await budgetPlanRepository.save(plan); budgetPlans=[plan]; budgetItems=[]; settings={...settings,monthlyExpenseTarget:0}; await settingsRepository.save(settings);
+}
+function budgetPlan() { return budgetPlans[0] || null; }
+function annualBudget(item) { return calculateAnnualBudget(item); }
+function budgetSummary() { return calculateBudgetSummary(budgetPlan(), budgetItems); }
+function currentMonthlyTarget() { return budgetSummary().targetMonthly; }
+function currentTargetLabel() { return '退休規劃明細'; }
+function budgetFrequencyOptions(selected) { return Object.entries(BUDGET_FREQUENCIES).map(([key,label]) => `<option value="${key}" ${key===selected?'selected':''}>${label}</option>`).join(''); }
+function budgetCategoryOptions(selected) { return Object.entries(BUDGET_CATEGORIES).map(([key,label]) => `<option value="${key}" ${key===selected?'selected':''}>${label}</option>`).join(''); }
+function orderedBudgetItems(items=budgetItems) {
+  return items.map((item, index) => ({ item, index })).sort((a,b) => {
+    const aBucket=a.item.bucket==='NEED'?0:1, bBucket=b.item.bucket==='NEED'?0:1;
+    const aOrder=a.item.sortOrder != null && Number.isFinite(Number(a.item.sortOrder)) ? Number(a.item.sortOrder) : a.index;
+    const bOrder=b.item.sortOrder != null && Number.isFinite(Number(b.item.sortOrder)) ? Number(b.item.sortOrder) : b.index;
+    return aBucket-bBucket || aOrder-bOrder || a.index-b.index;
+  }).map(row=>row.item);
+}
+function normalisedBudgetItems(items=budgetItems) { const positions={NEED:0,WANT:0}; return orderedBudgetItems(items).map(item=>{const bucket=item.bucket==='NEED'?'NEED':'WANT',sortOrder=positions[bucket]++;return {...item,bucket,sortOrder};}); }
+function budgetItemCard(item, index, total) {
+  const annual=annualBudget(item), monthly=annual/12, bucket=item.bucket==='NEED'?'基本需要':'品質想要';
+  const cadence=item.calculationMode==='REPLACEMENT' ? `每 ${item.replacementCycleYears} 年汰換` : item.frequency==='EVERY_N_MONTHS' ? `每 ${item.intervalCount} 個月` : item.frequency==='EVERY_N_YEARS' ? `每 ${item.intervalCount} 年` : BUDGET_FREQUENCIES[item.frequency];
+  const safeId=escapeHtml(item.id), safeBucket=escapeHtml(item.bucket);
+  return `<article class="budget-item ${item.isActive===false?'is-inactive':''}"><div class="budget-item-copy"><div><span class="budget-bucket ${item.bucket==='NEED'?'need':'want'}">${bucket}</span><span class="budget-category">${BUDGET_CATEGORIES[item.category] || '其他'}</span></div><b>${escapeHtml(item.name)}</b><small>${fmt(item.occurrenceAmount)}／${cadence}${item.note ? ` · ${escapeHtml(item.note)}` : ''}</small></div><div class="budget-item-values"><span>每月需求</span><strong>${fmt(monthly)}</strong><small>年 ${fmt(annual)}</small></div><div class="budget-item-actions"><button class="icon-order" aria-label="將${escapeHtml(item.name)}上移" title="上移" data-budget-move="up" data-budget-id="${safeId}" data-budget-bucket="${safeBucket}" ${index===0?'disabled':''}>↑</button><button class="icon-order" aria-label="將${escapeHtml(item.name)}下移" title="下移" data-budget-move="down" data-budget-id="${safeId}" data-budget-bucket="${safeBucket}" ${index===total-1?'disabled':''}>↓</button><button class="text-button" data-budget-edit="${safeId}">編輯</button><button class="text-button" data-budget-toggle="${safeId}">${item.isActive===false?'啟用':'停用'}</button><button class="icon-danger" aria-label="刪除${escapeHtml(item.name)}" title="刪除" data-budget-delete="${safeId}">×</button></div></article>`;
+}
+function budgetEditor() {
+  const existing=budgetItems.find(item => item.id===budgetEditId);
+  const item=existing || budgetDraft || { bucket:'NEED', category:'FOOD', name:'', calculationMode:'RECURRING', occurrenceAmount:'', frequency:'MONTHLY', intervalCount:'1', replacementCycleYears:'4', note:'' };
+  const isReplacement=item.calculationMode==='REPLACEMENT';
+  return `<section class="panel budget-editor" aria-labelledby="budget-editor-title"><div class="panel-title"><div><p class="eyebrow">${existing?'編輯項目':'新增項目'}</p><h2 id="budget-editor-title">${existing ? escapeHtml(existing.name) : '新增一筆生活開銷'}</h2><p>只要回答「花多少、多久一次」，系統就會換算為退休時每月要準備的金額。</p></div><button class="secondary" type="button" id="cancelBudgetEdit">取消</button></div><form id="budgetItemForm" novalidate><div id="budgetErrorSummary" class="budget-error-summary" role="alert" tabindex="-1" hidden><b>請修正以下欄位</b><ul></ul></div><section class="budget-form-section"><div class="budget-section-heading"><span>1</span><div><h3>這筆支出是什麼？</h3><p>先選分類與名稱，方便你之後整理預算。</p></div></div><div class="budget-form-grid budget-basic-grid"><label>生活層級<select name="bucket"><option value="NEED" ${item.bucket==='NEED'?'selected':''}>基本需要</option><option value="WANT" ${item.bucket==='WANT'?'selected':''}>品質想要</option></select><small>基本需要是日常必要；品質想要是娛樂、旅遊與興趣。</small></label><label>分類<select id="budgetCategory" name="category">${budgetCategoryOptions(item.category)}</select></label><label class="budget-name-field">項目名稱<input id="budgetName" name="name" maxlength="40" value="${escapeHtml(item.name)}" placeholder="例如：每月餐費、手機、房租" aria-describedby="budgetName-error" required /><small id="budgetName-error" class="field-error"></small></label></div></section><section class="budget-form-section"><div class="budget-section-heading"><span>2</span><div><h3>這筆錢怎麼發生？</h3><p>選一種最接近的情況；另一種的欄位會自動隱藏。</p></div></div><div class="budget-mode-options" role="radiogroup" aria-label="支出類型"><label class="budget-mode-card ${!isReplacement?'selected':''}"><input id="budgetModeRecurring" type="radio" name="calculationMode" value="RECURRING" ${!isReplacement?'checked':''}/><span><b>固定／定期支出</b><small>例如餐費、房租、保險、旅遊</small></span></label><label class="budget-mode-card ${isReplacement?'selected':''}"><input id="budgetModeReplacement" type="radio" name="calculationMode" value="REPLACEMENT" ${isReplacement?'checked':''}/><span><b>多年才換一次</b><small>例如手機、電腦、家電、家具</small></span></label></div><div id="budgetRecurringFields" class="budget-mode-fields" ${isReplacement?'hidden':''}><p class="budget-mode-explanation">例如：房租每月 10,000 元，退休後每月就要準備 10,000 元。</p><div class="budget-form-grid budget-calculation-grid"><label><span id="budgetAmountLabel">每次花費（TWD）</span><input id="budgetAmount" name="occurrenceAmount" inputmode="numeric" type="number" min="0" step="1" value="${escapeHtml(item.occurrenceAmount)}" placeholder="例如：10000" aria-describedby="budgetAmount-error budgetAmount-hint" required /><small id="budgetAmount-hint">填一次實際會花多少錢。</small><small id="budgetAmount-error" class="field-error"></small></label><label id="budgetFrequencyField">多久花一次？<select id="budgetFrequency" name="frequency">${budgetFrequencyOptions(item.frequency)}</select><small>系統會自動換算成每月平均。</small></label><label id="budgetIntervalField" ${!['EVERY_N_MONTHS','EVERY_N_YEARS'].includes(item.frequency)?'hidden':''}>間隔數量<input id="budgetInterval" name="intervalCount" type="number" min="1" max="120" step="1" value="${escapeHtml(item.intervalCount)}" /><small>例如每 3 個月一次。</small></label></div></div><div id="budgetReplacementFields" class="budget-mode-fields" ${!isReplacement?'hidden':''}><p class="budget-mode-explanation">例如：筆電 48,000 元、每 4 年換一次；系統會建議每月預留 1,000 元。</p><div class="budget-form-grid budget-calculation-grid"><label><span id="budgetReplacementAmountLabel">預計更換金額（TWD）</span><input id="budgetReplacementAmount" inputmode="numeric" type="number" min="0" step="1" value="${escapeHtml(item.occurrenceAmount)}" placeholder="例如：48000" aria-describedby="budgetAmount-error budgetAmount-hint" required /><small>含配件或你預期的總成本。</small></label><label>預計幾年換一次？<input id="budgetReplacementCycle" name="replacementCycleYears" type="number" min="1" max="50" step="0.1" value="${escapeHtml(item.replacementCycleYears)}" aria-describedby="budgetReplacementCycle-error" /><small>例如手機 3 年、筆電 4 年。</small><small id="budgetReplacementCycle-error" class="field-error"></small></label></div></div></section><section class="budget-form-section budget-optional"><div class="budget-section-heading"><span>3</span><div><h3>需要補充嗎？<em>選填</em></h3><p>想記錄品牌、用途或其他說明時再填。</p></div></div><label class="budget-note">備註<input name="note" maxlength="120" value="${escapeHtml(item.note)}" placeholder="例如：包含保固與配件" /></label></section><div id="replacementSuggestion" class="replacement-suggestion" hidden><b>看起來像耐用品。</b><span>手機、電腦與家電通常不是每年購買，可以改成汰換準備。</span><button type="button" class="text-button" id="useReplacementMode">改用多年汰換</button></div><div class="budget-preview" aria-live="polite"><div><span>換算後會加進退休目標</span><strong id="budgetPreview">每年 0 元 · 每月 0 元</strong></div><small id="budgetPreviewHint">填完金額與週期，就能看到系統如何換算。</small></div><div class="budget-editor-actions"><button class="primary" type="submit">${existing?'儲存修改':'新增項目'}</button></div></form></section>`;
+}
+function budgetEmptyState() { return `<section class="panel budget-empty"><p class="eyebrow">從日常開始</p><h2>不必先猜每月要多少</h2><p>先填固定支出，再補年度與多年一次的汰換費用；系統會轉成退休月現金流目標。</p><div class="budget-steps"><span>1. 每月固定支出</span><span>2. 年度支出</span><span>3. 多年汰換準備</span></div><button class="primary" id="startBudget">從基本需要開始</button><div class="budget-suggestions"><b>常被漏掉的項目</b>${BUDGET_SUGGESTIONS.map((item,index)=>`<button class="suggestion" data-budget-suggestion="${index}">${item.name}<span>＋</span></button>`).join('')}</div></section>`; }
+function livingBudgetPage() {
+  const summary=budgetSummary(), plan=summary.plan, ordered=orderedBudgetItems(), needs=ordered.filter(item=>item.bucket==='NEED'), wants=ordered.filter(item=>item.bucket==='WANT');
+  const hasItems=budgetItems.length>0;
+  const undo=budgetUndoItem ? `<section class="budget-undo" role="status">已刪除「${escapeHtml(budgetUndoItem.name)}」<button id="undoBudgetDelete">復原</button></section>` : '';
+  const listSection=(bucket,title,items)=>{const active=items.filter(item=>item.isActive!==false), monthly=active.reduce((sum,item)=>sum+annualBudget(item)/12,0), rows=items.map((item,index)=>budgetItemCard(item,index,items.length)).join('') || `<p class="budget-filter-empty">尚未有${title}項目。</p>`;return `<section class="budget-list-section" aria-labelledby="budget-list-${bucket}"><div class="budget-list-section-heading"><div><h3 id="budget-list-${bucket}">${title}</h3><p>${items.length} 項${active.length ? ` · 目前每月 ${fmt(monthly)}` : ''}</p></div><span>${bucket==='NEED'?'必要生活開支':'讓退休生活更有餘裕'}</span></div><div class="budget-items">${rows}</div></section>`;};
+  const list = `<section class="panel budget-list"><div class="panel-title"><div><p class="eyebrow">明細</p><h2>生活支出項目</h2><p>基本需要與品質想要各自排序；可用上下箭頭把相關項目排在一起，順序會保留在本機。</p></div><div class="budget-list-actions"><button class="primary budget-add-button" type="button" id="addBudgetItem" aria-expanded="${budgetEditorOpen}">＋ 新增項目</button></div></div><div class="budget-column-head" aria-hidden="true"><span>層級、分類與項目</span><span>每月需求／年預算</span><span>操作</span></div>${listSection('NEED','基本需要',needs)}${listSection('WANT','品質想要',wants)}</section>`;
+  return `<section class="budget-page"><section class="budget-hero"><div><p class="eyebrow">退休規劃</p><h2>我的退休生活預算</h2><p>先從最固定的生活支出開始，再逐步補上保險、醫療與耐用品汰換費用。</p></div></section>${undo}<section class="budget-summary-grid"><article><span>基本需要</span><strong>${fmt(summary.needsAnnual/12)}</strong><small>年 ${fmt(summary.needsAnnual)}</small></article><article><span>品質想要</span><strong>${fmt(summary.wantsAnnual/12)}</strong><small>年 ${fmt(summary.wantsAnnual)}</small></article><article><span>安全緩衝</span><strong>${plan?.bufferRateBps/100 || 0}%</strong><small>每月 ${fmt(summary.bufferAnnual/12)}</small></article><article class="budget-total"><span>退休月現金流目標</span><strong>${fmt(summary.targetMonthly)}</strong><small>${currentTargetLabel()}</small></article></section>${hasItems ? `${list}${budgetEditorOpen ? budgetEditor() : ''}` : `${budgetEmptyState()}${budgetEditorOpen ? budgetEditor() : ''}`}</section>`;
+}
+function navIcon(id) {
+  const paths={
+    overview:'<path d="M3 12h7V3H3v9Zm11 9h7v-9h-7v9ZM3 21h7v-5H3v5Zm11-13h7V3h-7v5Z"/>',
+    dividends:'<path d="M4 19V9m5 10V5m5 14v-7m5 7V3"/><path d="M2 21h20"/>',
+    budget:'<path d="M4 5h16v14H4z"/><path d="M8 9h8M8 13h5M16.5 16.5l1.5 1.5 3-3"/>',
+    transactions:'<path d="M4 6h16M4 12h16M4 18h16"/><circle cx="7" cy="6" r="1"/><circle cx="15" cy="12" r="1"/><circle cx="10" cy="18" r="1"/>',
+    'market-data':'<path d="M4 4h16v16H4zM4 9h16M9 4v16"/>',
+    settings:'<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2.8 2.8-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6v.2h-4V21a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1L4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9A1.7 1.7 0 0 0 3 14H2.8v-4H3a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9L4.2 7 7 4.2l.1.1A1.7 1.7 0 0 0 9 4.6 1.7 1.7 0 0 0 10 3v-.2h4V3a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1L19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.2v4H21a1.7 1.7 0 0 0-1.6 1Z"/>'
+  };
+  return `<svg viewBox="0 0 24 24" aria-hidden="true">${paths[id]||''}</svg>`;
+}
+function settingsPage() {
+  const plan=budgetPlan(), summary=budgetSummary(), bufferRate=Number(plan?.bufferRateBps||0)/100, selectedIdeal=plan?.selectedTarget!=='NEEDS_ONLY';
+  return `<section class="settings-page"><section class="panel setting retirement-goal-settings"><div class="panel-title"><div><p class="eyebrow">退休目標與覆蓋率</p><h2>決定想要的退休生活</h2><p>生活線與安全緩衝會一起計入退休月現金流目標。</p></div><button class="secondary" type="button" data-page="budget">管理退休預算</button></div><div class="setting-target"><span>目前退休月現金流目標</span><strong>${fmt(currentMonthlyTarget())}</strong><small>依退休規劃明細即時計算。</small></div><div class="settings-preference-grid"><label>覆蓋率比較基準<select id="budgetTargetMode"><option value="NEEDS_AND_WANTS" ${selectedIdeal?'selected':''}>理想生活線（需要＋想要）</option><option value="NEEDS_ONLY" ${!selectedIdeal?'selected':''}>最低生活線（只算需要）</option></select><small>目前基本需要 ${fmt(summary.needsAnnual/12)}；${selectedIdeal?'含品質想要與安全緩衝':'不含品質想要'}。</small></label><div class="buffer-setting"><b>安全緩衝率</b><small>為漏項與價格波動預留空間。</small><div class="buffer-controls" role="group" aria-label="安全緩衝率">${[0,5,10,15].map(rate=>`<button type="button" data-buffer-rate="${rate}" class="${bufferRate===rate?'active':''}" aria-pressed="${bufferRate===rate}">${rate}%</button>`).join('')}<label>自訂 <input id="customBufferRate" type="number" min="0" max="50" step="1" inputmode="numeric" value="${!([0,5,10,15].includes(bufferRate)) ? bufferRate : ''}" aria-label="自訂安全緩衝率" />%</label></div></div></div></section><section class="panel setting"><div class="panel-title"><div><p class="eyebrow">股息現金流</p><h2>股息歸屬方式</h2><p>選擇現金流報表採用的月份計算口徑。</p></div></div><label>股息歸屬依據<select id="basis" data-setting-control><option value="PAYMENT_DATE" ${settings.dividendDateBasis==='PAYMENT_DATE'?'selected':''}>依發放日（建議）</option><option value="EX_DIVIDEND_DATE" ${settings.dividendDateBasis==='EX_DIVIDEND_DATE'?'selected':''}>依除息日</option></select><small>會影響股息現金流的月份歸屬。</small></label></section>${chartSettingsPanel()}<section class="two-col settings-two-col"><section class="panel setting"><div class="panel-title"><div><p class="eyebrow">資料備份與維護</p><h2>備份與還原</h2><p>備份包含交易、退休規劃與所有設定。</p></div></div><div class="setting-actions"><button class="secondary" id="backup">匯出 JSON 備份</button><label class="file-label">匯入 JSON 備份<input id="restore" type="file" accept="application/json" /></label></div></section><section class="panel setting"><div class="panel-title"><div><p class="eyebrow">市場資料</p><h2>快取維護</h2><p>清除後不影響交易與退休規劃，可隨時重新同步。</p></div></div><button class="danger subtle setting-action" id="clearMarket">清除市場快取</button></section></section><section class="panel setting-danger-zone settings-danger-card"><div><div><p class="eyebrow">危險區</p><h2>清除全部個人資料</h2><p>這會永久刪除目前瀏覽器內的交易、退休規劃、設定與市場快取。</p></div><button class="danger setting-action" id="clearAll">清除全部個人資料</button></div></section></section>`;
+}
+function render() {
+  settings.showTotalAsset = settings.showTotalAsset ?? true;
+  settings.showTotalReturn = settings.showTotalReturn ?? true;
+  settings.gainMilestoneInterval = normaliseGainMilestoneInterval(settings.gainMilestoneInterval);
+  Object.assign(settings, normaliseTrendEventMarkerSettings(settings));
+  const m = page === 'overview' ? metrics() : null;
+  root.innerHTML = `<div class="shell"><aside><a class="brand" href="#overview"><span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 18 18 5M9 5h9v9"/></svg></span><b>存股退休</b><em>STOCK JOURNEY</em></a><nav aria-label="主要導覽">${Object.entries(PAGE_LABELS).map(([id,name])=>`<button data-page="${id}" class="${page===id?'active':''}" ${page===id?'aria-current="page"':''}><i>${navIcon(id)}</i><span>${name}</span></button>`).join('')}</nav><div class="privacy"><span aria-hidden="true"></span><b>資料只留在這台裝置</b><a data-page="settings">備份與設定</a></div></aside><main id="main-content" tabindex="-1">${header()}${page === 'overview' ? blueDashboardOverview(m) : page === 'budget' ? livingBudgetPage() : page === 'transactions' ? transactionsPage() : page === 'market-data' ? marketDataPage() : page === 'settings' ? settingsPage() : dividendsPage()}</main></div>${transactionModal()}${aiImportGuide()}<div id="toast" role="status" aria-live="polite"></div>`;
+  bind();
+}
+function header() {
+  const marketSummary=marketSyncSummary();
+  const subtitle=page==='budget' ? '從生活支出建立退休月現金流目標。' : page==='transactions' ? '管理交易紀錄，系統會自動計算持股與成本。' : page==='settings' ? '退休目標、顯示方式與資料管理。' : `市場資料：${marketHeaderLabel(marketSummary)}`;
+  const action='';
+  return `<header><div><p class="eyebrow">存股退休</p><h1>${PAGE_LABELS[page]}</h1><p class="market-as-of" role="status" aria-live="polite" aria-atomic="true">${subtitle}</p></div><div class="header-actions">${action}</div></header>`;
+}
+function onboardingChecklist() {
+  const budgetDone = budgetItems.some(item => item.isActive !== false && Number(item.occurrenceAmount) > 0);
+  const holdingsDone = transactions.length > 0;
+  const complete = Number(budgetDone) + Number(holdingsDone);
+  if (complete === 2) return '';
+  const next = !budgetDone ? ['建立退休預算','先填寫每月生活所需。','budget','開始規劃'] : ['加入持股紀錄','匯入 CSV 或手動新增交易。','transactions','加入持股'];
+  return `<section class="onboarding" aria-labelledby="onboarding-title"><span class="onboarding-step" aria-hidden="true">${complete + 1}</span><div><b id="onboarding-title">下一步：${next[0]}</b><p>${next[1]} <span class="onboarding-count">已完成 ${complete}／2</span></p></div><button class="secondary" data-onboarding-action="${next[2]}">${next[3]}</button></section>`;
+}
+function blueDashboardOverview(m) {
+  const avg=m.div.avg;
+  const target=currentMonthlyTarget();
+  const hasGoal=target>0;
+  const coverage=avg != null && hasGoal ? avg/target*100 : null;
+  const gap=avg == null ? null : target-avg;
+  const goalReached=coverage != null && coverage>=100;
+  const syncSummary=marketSyncSummary(),priceCount=m.holdings.filter(item=>item.last).length,allPrices=Boolean(m.holdings.length)&&priceCount===m.holdings.length;
+  const currentYear=String(new Date().getFullYear());
+  const yearRows=m.div.rows.filter(row=>row.basis.startsWith(currentYear));
+  const paidThisYear=yearRows.filter(row=>!isUpcomingDividend(row)).reduce((sum,row)=>sum+row.amount,0);
+  const upcomingThisYear=yearRows.filter(isUpcomingDividend).reduce((sum,row)=>sum+row.amount,0);
+  const averageLabel=`今年 1 月至 ${m.div.elapsedMonths} 月已發放股息平均`;
+  const marketChange=allPrices&&m.external > 0 ? m.market-m.external : null;
+  const marketChangeRate=marketChange == null ? null : marketChange/m.external*100;
+  const marketValueLabel=allPrices?'目前持股市值':priceCount?'估算持股市值':'持股成本';
+  const marketChangeLabel=!priceCount?'尚無收盤價；同步後顯示市值':!allPrices?`${priceCount}/${m.holdings.length} 檔使用收盤價，其餘暫以成本估算`:marketChange==null?'尚無外部投入可比較':`投入成果 ${marketChange>=0?'+':'−'}${fmt(Math.abs(marketChange))}（${fmtReturnPercent(marketChangeRate)}）`;
+  const marketValueHint=allPrices?`採用截至 ${syncSummary.latestDate||'最近交易日'} 的收盤價`:priceCount?'此為混合收盤價與成本的估算值':'目前只顯示交易取得成本，不代表市場價值';
+  const goalAside=!hasGoal ? `<span>退休目標尚未設定</span><strong>設定退休規劃</strong><button data-page="budget">開始規劃 →</button>` : goalReached ? `<span class="goal-status">已達成目標</span><strong>${fmt(Math.abs(gap))}</strong><small>平均每月超過目標</small>` : `<span>尚未達標</span><strong>${fmt(gap)}</strong><small>平均每月仍需補足</small>`;
+  return `${onboardingChecklist()}<section class="blue-goal-card ${goalReached?'is-reached':'is-progress'} ${hasGoal?'':'is-unset'}"><div class="blue-goal-main"><p class="eyebrow">退休生活費覆蓋率</p><div class="blue-goal-value"><strong>${coverage==null?'尚無資料':`${coverage.toFixed(1)}%`}</strong><span>${averageLabel}</span></div><div class="blue-progress" role="progressbar" aria-label="退休生活費覆蓋率" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.min(coverage||0,100).toFixed(0)}"><i style="width:${Math.min(coverage||0,100)}%"></i></div><p>平均月股息 <b>${fmt(avg)}</b><span>／</span>退休月現金流目標 <b>${hasGoal?fmt(target):'尚未設定'}</b></p><small class="goal-source">${currentTargetLabel()} <button data-page="budget">查看明細</button></small></div><div class="blue-goal-gap">${goalAside}</div></section><section class="blue-kpis"><article><span>${marketValueLabel}</span><strong>${fmt(m.market)}</strong><small class="market-change ${marketChange == null ? '' : marketChange>=0?'positive':'negative'}">${marketChangeLabel}</small><small>${marketValueHint}</small></article><article><span>${currentYear} 年已入帳股息</span><strong>${fmt(paidThisYear)}</strong><small>不包含尚未發放項目</small></article><article><span>${currentYear} 年預計再入帳</span><strong>${fmt(upcomingThisYear)}</strong><small>已公告、尚未發放</small></article></section>${transactions.length?`<section class="panel asset-trend-panel"><div class="panel-title trend-heading"><div><p class="eyebrow">資產軌跡</p><h2>資產走勢</h2></div></div><div id="trendChartMount">${trendChart()}</div></section>`:emptyState()}`;
+}
+function trendDailySeries() {
+  if (!transactions.length) return [];
+  const first=[...transactions].sort((a,b)=>a.date.localeCompare(b.date))[0].date, symbols=[...new Set(transactions.map(t=>t.symbol))];
+  const prices=Object.fromEntries(symbols.map(s=>[s,[...(cacheFor(s)?.prices||[])].filter(p=>p.date>=first).sort((a,b)=>a.date.localeCompare(b.date))]));
+  const divs=dividendReceipts().reduce((map,row)=>{map[row.basis]=(map[row.basis]||0)+row.amount;return map;},{});
+  // Dividend data contains announced future payment dates. They are useful in the
+  // dividend view, but must never extend an asset-history chart beyond today.
+  const asOf=today();
+  const dates=[...new Set([...transactions.map(t=>t.date),...Object.values(prices).flat().map(p=>p.date),...Object.keys(divs)])].filter(d=>d>=first&&d<=asOf).sort();
+  const firstDates=transactions.reduce((map,t)=>{if(!map[t.symbol]||t.date<map[t.symbol])map[t.symbol]=t.date;return map;},{});
+  const txs=transactions.reduce((map,t)=>{(map[t.date] ||= []).push(t);return map;},{}), cursor=Object.fromEntries(symbols.map(s=>[s,0])), latest=Object.fromEntries(symbols.map(s=>[s,null])), qty=Object.fromEntries(symbols.map(s=>[s,0])), book=Object.fromEntries(symbols.map(s=>[s,0])); let external=0,reinvested=0;
+  const rows=dates.map(date=>{ symbols.forEach(s=>{while(cursor[s]<prices[s].length&&prices[s][cursor[s]].date<=date)latest[s]=prices[s][cursor[s]++];}); let dailyInvest=0,dailyReinvest=0; const todayTx=txs[date]||[]; todayTx.forEach(t=>{const amount=cost(t);qty[t.symbol]+=Number(t.quantity);book[t.symbol]+=amount;if(['MANUAL_BUY','RECURRING_INVESTMENT'].includes(t.acquisitionType)){external+=amount;dailyInvest+=amount;}if(t.acquisitionType==='DIVIDEND_REINVESTMENT'){reinvested+=amount;dailyReinvest+=amount;}}); const missing=[]; const market=symbols.reduce((sum,s)=>{if(!qty[s])return sum;if(latest[s])return sum+qty[s]*Number(latest[s].close);missing.push(s);return sum+book[s];},0); const events=todayTx.map(t=>({type:t.acquisitionType,label:ACQUISITIONS[t.acquisitionType],symbol:t.symbol,quantity:Number(t.quantity),amount:cost(t),isNew:firstDates[t.symbol]===date})); return {date,market,external,reinvested,dailyInvest,dailyReinvest,dividends:divs[date]||0,missing,estimated:missing.length>0,transactions:todayTx.length,events}; });
+  return enrichTrendRows(rows);
+}
+function milestoneStep(value) { if(value>=10000000)return 1000000;if(value>=1000000)return 500000;return 100000; }
+function normaliseGainMilestoneInterval(value) { const parsed=Math.round(Number(value)); return Number.isFinite(parsed) ? Math.max(10000, Math.min(100000000, parsed)) : 1000000; }
+function gainMilestoneInterval() { return normaliseGainMilestoneInterval(settings.gainMilestoneInterval); }
+function normaliseTrendEventMarkerSettings(source = settings) { return Object.fromEntries(TREND_EVENT_MARKER_SETTINGS.map(({id})=>[id,source?.[id] ?? true])); }
+function enrichTrendRows(rows) {
+  if(!rows.length)return rows;
+  const maxMarket=Math.max(...rows.map(row=>row.market),0),assetStep=milestoneStep(maxMarket),gainStep=gainMilestoneInterval();
+  let lastAsset=Math.floor(rows[0].market/assetStep)*assetStep,lastGain=Math.floor(Math.max(0,rows[0].market-rows[0].external)/gainStep)*gainStep;
+  return rows.map((row,index)=>{const previous=rows[index-1],marketChange=previous?row.market-previous.market:null,marketChangeRate=previous&&previous.market?marketChange/previous.market*100:null,milestones=[];let assetLevel=index===0?lastAsset:Math.floor(row.market/assetStep)*assetStep,gainLevel=Math.floor(Math.max(0,row.market-row.external)/gainStep)*gainStep;if(assetLevel>0&&(index===0||assetLevel>lastAsset))milestones.push({kind:'asset',value:assetLevel,label:`持股資產 ${compact(assetLevel)}`});if(gainLevel>0&&(index===0||gainLevel>lastGain))milestones.push({kind:'gain',value:gainLevel,label:`累積成果 ${compact(gainLevel)}`});lastAsset=Math.max(lastAsset,assetLevel);lastGain=Math.max(lastGain,gainLevel);return {...row,marketChange,marketChangeRate,returnRate:row.external?(row.market-row.external)/row.external*100:null,milestones};});
+}
+function trendSeries() { const daily=trendDailySeries(); if(trendState.frequency==='day')return daily; const months={}; daily.forEach(row=>{const key=row.date.slice(0,7),previous=months[key];months[key]={...row,dailyInvest:(previous?.dailyInvest||0)+row.dailyInvest,dailyReinvest:(previous?.dailyReinvest||0)+row.dailyReinvest,dividends:(previous?.dividends||0)+row.dividends,missing:[...new Set([...(previous?.missing||[]),...row.missing])],estimated:(previous?.estimated||false)||row.estimated,transactions:(previous?.transactions||0)+row.transactions,events:[...(previous?.events||[]),...row.events]};});return enrichTrendRows(Object.values(months).map(row=>({...row,milestones:[]}))); }
+function trendSelection(all=trendSeries()) { if(!all.length)return {points:[],start:0,end:0};const max=all.length-1;if(trendState.start==null||trendState.end==null||trendState.end>max){trendState.start=0;trendState.end=max;}trendState.start=Math.max(0,Math.min(trendState.start,max));trendState.end=Math.max(trendState.start,Math.min(trendState.end,max));return {points:all.slice(trendState.start,trendState.end+1),start:trendState.start,end:trendState.end}; }
+function trendDateLabel(date) { const [y,m,d]=date.split('-');return trendState.frequency==='day'?`${y}/${m}/${d}`:`${y} 年 ${m} 月`; }
+function compact(value) { return `${(value/10000).toLocaleString('zh-TW',{maximumFractionDigits:value<1000000?0:1})}萬`; }
+function trendSvgLine(points,key,x,y) { return points.map((p,i)=>`${i?'L':'M'}${x(i).toFixed(1)},${y(p[key]).toFixed(1)}`).join(' '); }
+function signedMoney(value) { if(value==null)return '—';return `${value>=0?'+':'−'}${fmt(Math.abs(value))}`; }
+function normaliseTrendTooltipEventLimit(value) { const parsed=Math.floor(Number(value));return Number.isFinite(parsed)?Math.max(1,Math.min(20,parsed)):3; }
+function trendTooltipEventLimit() { return normaliseTrendTooltipEventLimit(settings.trendTooltipEventLimit); }
+function trendEventRows(events) { return `<div class="trend-event-list">${events.map(event=>`<div class="trend-event-row event-${event.type.toLowerCase()}"><i aria-hidden="true"></i><span><b>${escapeHtml(event.symbol)} · +${money.format(event.quantity)} 股</b><small>${escapeHtml(event.label)}${event.amount>0?` · ${fmt(event.amount)}`:''}</small></span></div>`).join('')}</div>`; }
+function trendMilestoneBanner(milestone) { return `<div class="trend-milestone-banner ${milestone.kind==='gain'?'is-gain':'is-asset'}"><span aria-hidden="true">◆</span><div><b>${milestone.kind==='gain'?'累積成果里程碑':'資產里程碑'}</b><small>${escapeHtml(milestone.label)}</small></div></div>`; }
+function visibleTrendMilestones(milestones = []) { return milestones.filter(milestone => milestone.kind==='asset' ? settings.showTotalAsset : settings.showTotalReturn); }
+function trendEventTypeVisible(type) { const marker=TREND_EVENT_MARKER_SETTINGS.find(item=>item.type===type); return marker ? settings[marker.id] ?? true : true; }
+function visibleTrendMarkerEvents(events = []) { return events.filter(event => (event.isNew && (settings.showNewStockMarker ?? true)) || trendEventTypeVisible(event.type)); }
+function trendMilestoneSummary(milestones) { const visible=visibleTrendMilestones(milestones); return visible.length ? `<div class="trend-milestones${visible.length===1?' is-single':''}">${visible.map(trendMilestoneBanner).join('')}</div>` : ''; }
+function chartTooltip(item) { const comparison=trendState.frequency==='day'?'較前一交易日':'較上月',milestones=item.milestones||[],limit=trendTooltipEventLimit(),visibleEvents=item.events.slice(0,limit),remaining=item.events.length-visibleEvents.length,eventSections=visibleEvents.length?`<div class="trend-event-section"><b>${trendState.frequency==='day'?'當日':'本月'}交易 · ${item.events.length} 筆</b>${trendEventRows(visibleEvents)}${remaining>0?`<button type="button" class="trend-tooltip-more" data-trend-detail-date="${item.date}">查看全部 ${item.events.length} 筆</button>`:''}</div>`:'';return `<b class="trend-tooltip-date">${trendDateLabel(item.date)}</b>${trendMilestoneSummary(milestones)}<div class="trend-value-block"><span>目前持有市值${item.estimated?' · 估算':''}</span><strong>${fmt(item.market)} ${item.returnRate==null?'':`<em class="${item.returnRate>=0?'positive':'negative'}">(${fmtReturnPercent(item.returnRate)})</em>`}</strong></div><div class="trend-value-block trend-change-block"><span>${comparison}</span><strong class="${item.marketChange==null?'':item.marketChange>=0?'positive':'negative'}">${signedMoney(item.marketChange)} ${item.marketChangeRate==null?'':`<em>(${fmtReturnPercent(item.marketChangeRate)})</em>`}</strong></div>${eventSections}${item.missing.length?`<p class="trend-warning">${escapeHtml(item.missing.join('、'))} 缺少當期價格，以取得成本估算。</p>`:''}`; }
+function trendDetailDrawer(item) { if(!item)return '';const newEvents=item.events.filter(event=>event.isNew),otherEvents=item.events.filter(event=>!event.isNew);return `<aside class="trend-detail-drawer" tabindex="-1" aria-label="${trendDateLabel(item.date)}交易明細"><div class="trend-detail-heading"><div><span>交易明細</span><strong>${trendDateLabel(item.date)}</strong></div><button type="button" class="trend-detail-close" data-trend-detail-close aria-label="關閉交易明細">×</button></div>${trendMilestoneSummary(item.milestones||[])}${newEvents.length?`<div class="trend-event-section is-new"><b>首次持有${newEvents.length>1?` · ${newEvents.length} 檔`:''}</b>${trendEventRows(newEvents)}</div>`:''}${otherEvents.length?`<div class="trend-event-section"><b>${trendState.frequency==='day'?'當日':'本月'}交易 · ${otherEvents.length} 筆</b>${trendEventRows(otherEvents)}</div>`:''}${!item.events.length?`<p class="trend-detail-empty">這個日期沒有交易紀錄。</p>`:''}</aside>`; }
+function trendScale(points) { const values=points.map(row=>row.market),min=Math.min(...values),max=Math.max(...values),span=Math.max(max-min,max*.04,1),roughStep=span*1.3/4,power=10**Math.floor(Math.log10(roughStep)),normal=roughStep/power,nice=normal<=1?1:normal<=2?2:normal<=5?5:10,step=nice*power,yMin=Math.max(0,Math.floor((min-span*.15)/step)*step),yMax=Math.ceil((max+span*.15)/step)*step;return {yMin,yMax:yMax<=yMin?yMin+step*4:yMax,ticks:Array.from({length:5},(_,i)=>yMin+(yMax-yMin)*i/4)}; }
+function trendChartWidth() { return typeof matchMedia==='function'&&matchMedia('(max-width: 520px)').matches?600:1000; }
+function milestoneLabelIndexes(points) { const indexes=points.map((row,index)=>row.milestones?.length?index:null).filter(index=>index!=null);if(indexes.length<=5)return new Set(indexes);const stride=Math.ceil(indexes.length/5),selected=indexes.filter((_,position)=>position%stride===0);if(selected.at(-1)!==indexes.at(-1))selected.push(indexes.at(-1));return new Set(selected); }
+function trendMarkerLabel(item, events = visibleTrendMarkerEvents(item.events)) { const newSymbols=(settings.showNewStockMarker ?? true)?events.filter(event=>event.isNew).map(event=>event.symbol):[],milestones=visibleTrendMilestones(item.milestones),parts=[];if(newSymbols.length)parts.push(`首次持有 ${newSymbols.join('、')}`);else if(events.length)parts.push(`${events.length} 筆交易`);if(milestones.length)parts.push(milestones.map(row=>row.label).join('、'));return `${trendDateLabel(item.date)}，${parts.join('，')}`; }
+function trendMarkerOverlays(points,x,y,width,height) { return points.map((item,index)=>{const events=visibleTrendMarkerEvents(item.events),milestones=visibleTrendMilestones(item.milestones);if(!events.length&&!milestones.length)return '';const isNew=(settings.showNewStockMarker ?? true)&&events.some(event=>event.isNew),hasAsset=milestones.some(row=>row.kind==='asset'),hasGain=milestones.some(row=>row.kind==='gain'),kind=events.length===1?events[0].type.toLowerCase():'mixed',className=isNew?'new-stock':hasAsset?'milestone-asset':hasGain?'milestone-gain':`event-${kind}`;return `<button type="button" class="trend-event-marker ${className}" data-trend-marker="${index}" aria-label="${escapeHtml(trendMarkerLabel(item,events))}" style="left:${x(index)/width*100}%;top:${y(item.market)/height*100}%"><span class="trend-event-halo" aria-hidden="true"></span><span class="trend-event-dot" aria-hidden="true"></span></button>`;}).join(''); }
+function trendMilestoneOverlays(points,indexes,x,y,width,height) { return points.map((item,index)=>{if(!indexes.has(index))return '';return visibleTrendMilestones(item.milestones).map((milestone,offset)=>{const left=Math.max(8,Math.min(92,x(index)/width*100)),top=y(item.market)/height*100,raise=12+offset*30;return `<span class="trend-milestone-label ${milestone.kind==='gain'?'is-gain':'is-asset'}" aria-hidden="true" style="left:${left}%;top:${top}%;transform:translate(-50%,-100%) translateY(-${raise}px)">${escapeHtml(milestone.label)}</span>`;}).join('');}).join(''); }
+function trendChart() {
+  const all=trendSeries(),selected=trendSelection(all),points=selected.points;
+  if(!points.length)return `<p class="trend-empty">同步市場資料後，即可建立資產時間序列。</p>`;
+  const width=trendChartWidth(),height=340,left=width===600?58:80,right=24,top=52,bottom=55,chartWidth=width-left-right,chartHeight=height-top-bottom,{yMin,yMax,ticks}=trendScale(points),x=i=>left+i*chartWidth/Math.max(1,points.length-1),y=v=>top+chartHeight-(v-yMin)/(yMax-yMin)*chartHeight,labels=points.length<=6?points.map((_,i)=>i):Array.from({length:6},(_,i)=>Math.round(i*(points.length-1)/5)),miniMin=Math.min(...all.map(row=>row.market)),miniMax=Math.max(...all.map(row=>row.market)),miniSpan=Math.max(1,miniMax-miniMin),mini=all.map((p,i)=>`${i?'L':'M'}${10+i*980/Math.max(1,all.length-1)},${36-(p.market-miniMin)/miniSpan*28}`).join(' '),startPct=selected.start/Math.max(1,all.length-1)*100,endPct=selected.end/Math.max(1,all.length-1)*100,selectionPct=endPct-startPct,compactSelection=selectionPct<4,startDate=trendDateLabel(all[selected.start].date),endDate=trendDateLabel(all[selected.end].date),labelIndexes=milestoneLabelIndexes(points),handleAria=(edge,date,index)=>`class="navigator-handle ${edge}" data-navigator-handle="${edge}" role="slider" aria-label="調整${edge==='start'?'開始':'結束'}日期，目前 ${date}" aria-valuemin="0" aria-valuemax="${all.length-1}" aria-valuenow="${index}" aria-valuetext="${date}" title="${date}；可拖曳或使用方向鍵微調"`,markers=trendMarkerOverlays(points,x,y,width,height),milestoneLabels=trendMilestoneOverlays(points,labelIndexes,x,y,width,height);
+  const detailItem=trendDetailDate?points.find(item=>item.date===trendDetailDate):null;
+  return `<div class="trend-controls"><div class="segmented" role="group" aria-label="資料頻率"><button data-trend-frequency="month" class="${trendState.frequency==='month'?'selected':''}">每月</button><button data-trend-frequency="day" class="${trendState.frequency==='day'?'selected':''}">每日</button></div><div class="range trend-ranges" role="group" aria-label="顯示區間">${[['1m','1個月'],['3m','3個月'],['6m','半年'],['1y','1年'],['3y','3年'],['all','全部']].map(([key,label])=>`<button data-trend-range="${key}" class="${trendState.range===key?'selected':''}">${label}</button>`).join('')}</div></div><div class="trend-workspace${detailItem?' has-detail':''}"><div class="trend-chart-core"><div class="asset-chart-stage" id="assetTrendChart"><svg viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" aria-label="持股資產走勢圖"><defs><linearGradient id="trendFill" x1="0" x2="0" y1="0" y2="1"><stop stop-color="#0f91b8" stop-opacity=".2"/><stop offset="1" stop-color="#0f91b8" stop-opacity=".015"/></linearGradient></defs>${ticks.map(t=>`<line x1="${left}" x2="${width-right}" y1="${y(t)}" y2="${y(t)}" class="chart-grid"/>`).join('')}<path d="${trendSvgLine(points,'market',x,y)} L${x(points.length-1)},${top+chartHeight} L${x(0)},${top+chartHeight} Z" fill="url(#trendFill)"/><path d="${trendSvgLine(points,'market',x,y)}" class="trend-market-line"/><g id="trendFocus"></g></svg>${markers}${milestoneLabels}<span class="trend-focus-dot" id="trendFocusDot" aria-hidden="true"></span><div class="chart-y-axis" aria-hidden="true">${ticks.map(t=>`<span style="top:${y(t)/height*100}%">${compact(t)}</span>`).join('')}</div><div class="chart-x-axis" aria-hidden="true">${labels.map(i=>`<span style="left:${x(i)/width*100}%">${trendDateLabel(points[i].date)}</span>`).join('')}</div><div class="trend-tooltip" id="trendTooltip" role="status" aria-live="polite"></div></div><div class="trend-navigator-wrap"><div class="trend-navigator-dates"><span data-navigator-date="start">${startDate}</span><span data-navigator-date="end">${endDate}</span></div><div class="trend-navigator" id="trendNavigator" aria-label="拖曳以選擇圖表日期區間"><svg viewBox="0 0 1000 42" preserveAspectRatio="none"><path d="${mini}" class="navigator-line"/></svg><div class="navigator-selection${compactSelection?' compact':''}" style="left:${startPct}%;right:${100-endPct}%"><button ${handleAria('start',startDate,selected.start)}></button><button ${handleAria('end',endDate,selected.end)}></button></div></div></div></div>${trendDetailDrawer(detailItem)}</div>`;
+}
+function trendIndexAtClientX(clientX,rect,length,viewWidth=trendChartWidth()) { if(length<=1)return 0;const left=viewWidth===600?58:80,right=24,chartX=(clientX-rect.left)/Math.max(1,rect.width)*viewWidth,pointGap=(viewWidth-left-right)/(length-1),nearest=Math.round((chartX-left)/pointGap);return Math.max(0,Math.min(length-1,nearest)); }
+function trendIndexAtStageClientX(stage,clientX,length) { const svg=stage.querySelector('svg'),rect=svg?.getBoundingClientRect()||stage.getBoundingClientRect(),viewWidth=svg?.viewBox?.baseVal?.width||trendChartWidth();return trendIndexAtClientX(clientX,rect,length,viewWidth); }
+function updateTrendFocus(index) { const points=trendSelection().points,item=points[index],stage=document.querySelector('#assetTrendChart');if(!item||!stage)return;const svg=stage.querySelector('svg'),width=svg?.viewBox?.baseVal?.width||trendChartWidth(),height=svg?.viewBox?.baseVal?.height||340,left=width===600?58:80,right=24,top=52,bottom=55,chartWidth=width-left-right,chartHeight=height-top-bottom,{yMin,yMax}=trendScale(points),x=left+index*chartWidth/Math.max(1,points.length-1),y=value=>top+chartHeight-(value-yMin)/(yMax-yMin)*chartHeight,focus=document.querySelector('#trendFocus'),focusDot=document.querySelector('#trendFocusDot'),tip=document.querySelector('#trendTooltip');if(!focus||!focusDot||!tip)return;stage.querySelectorAll('[data-trend-marker]').forEach(marker=>marker.classList.toggle('is-active',Number(marker.dataset.trendMarker)===index));focus.innerHTML=`<line x1="${x}" x2="${x}" y1="${top}" y2="${top+chartHeight}" class="trend-crosshair"/>`;focusDot.style.left=`${x/width*100}%`;focusDot.style.top=`${y(item.market)/height*100}%`;focusDot.classList.add('show');tip.innerHTML=chartTooltip(item);tip.classList.add('show');const rect=stage.getBoundingClientRect(),anchor=x/width*rect.width;tip.style.left=`${anchor}px`;tip.classList.toggle('right',anchor>rect.width*.62); }
+function trendSetRange(range) { const all=trendSeries(),end=Math.max(0,all.length-1);trendState.range=range;trendState.end=end;if(range==='all')trendState.start=0;else{const target=new Date(`${all[end].date}T00:00:00`),months={'1m':1,'3m':3,'6m':6,'1y':12,'3y':36}[range]||12;target.setMonth(target.getMonth()-months);const date=target.toISOString().slice(0,10);trendState.start=Math.max(0,all.findIndex(row=>row.date>=date));}render(); }
+function trendSetFrequency(frequency) { trendState.frequency=frequency;trendState.start=null;trendState.end=null;trendSetRange(frequency==='day'?'1y':'all'); }
+function indexForNavigator(clientX,rect,length) { return Math.max(0,Math.min(length-1,Math.round((clientX-rect.left)/rect.width*(length-1)))); }
+function repaintTrend() { const mount=document.querySelector('#trendChartMount');if(mount){mount.innerHTML=trendChart();bindTrendInteractions();} }
+function previewTrendNavigator(navigator,all) { const selected=trendSelection(all),denominator=Math.max(1,all.length-1),startPct=selected.start/denominator*100,endPct=selected.end/denominator*100,selection=navigator.querySelector('.navigator-selection'),startDate=trendDateLabel(all[selected.start].date),endDate=trendDateLabel(all[selected.end].date);if(selection){selection.style.left=`${startPct}%`;selection.style.right=`${100-endPct}%`;selection.classList.toggle('compact',endPct-startPct<4);}const startLabel=document.querySelector('[data-navigator-date="start"]'),endLabel=document.querySelector('[data-navigator-date="end"]'),rangeLabel=document.querySelector('[data-navigator-range-label]');if(startLabel)startLabel.textContent=startDate;if(endLabel)endLabel.textContent=endDate;if(rangeLabel)rangeLabel.textContent='自訂區間';[['start',selected.start,startDate],['end',selected.end,endDate]].forEach(([edge,index,date])=>{const handle=navigator.querySelector(`[data-navigator-handle="${edge}"]`);if(handle){handle.setAttribute('aria-valuenow',index);handle.setAttribute('aria-valuetext',date);handle.setAttribute('aria-label',`調整${edge==='start'?'開始':'結束'}日期，目前 ${date}`);handle.title=`${date}；可拖曳或使用方向鍵微調`;}}); }
+let trendPreviewFrame=null;
+function previewTrendChart() { if(trendPreviewFrame!=null)return;trendPreviewFrame=requestAnimationFrame(()=>{trendPreviewFrame=null;const template=document.createElement('template');template.innerHTML=trendChart();const currentStage=document.querySelector('#assetTrendChart'),nextStage=template.content.querySelector('#assetTrendChart');if(currentStage&&nextStage)currentStage.replaceWith(nextStage);}); }
+function bindTrendInteractions() {
+  document.querySelectorAll('[data-trend-frequency]').forEach(button=>button.onclick=()=>trendSetFrequency(button.dataset.trendFrequency));
+  document.querySelectorAll('[data-trend-range]').forEach(button=>button.onclick=()=>trendSetRange(button.dataset.trendRange));
+  const stage=document.querySelector('#assetTrendChart');
+  if(stage){
+    stage.addEventListener('pointermove',event=>{if(event.target.closest?.('[data-trend-detail-date]'))return;const points=trendSelection().points,index=trendIndexAtStageClientX(stage,event.clientX,points.length);updateTrendFocus(index);});
+    stage.addEventListener('click',event=>{const more=event.target.closest?.('[data-trend-detail-date]');if(more)openTrendDetailByDate(more.dataset.trendDetailDate);});
+    stage.addEventListener('pointerleave',()=>{document.querySelector('#trendTooltip')?.classList.remove('show');document.querySelector('#trendFocusDot')?.classList.remove('show');stage.querySelectorAll('[data-trend-marker].is-active').forEach(marker=>marker.classList.remove('is-active'));});
+    stage.querySelectorAll('[data-trend-marker]').forEach(marker=>{
+      const show=()=>updateTrendFocus(Number(marker.dataset.trendMarker));
+      marker.addEventListener('focus',show);
+      marker.addEventListener('click',event=>{const points=trendSelection().points,index=event.clientX||event.clientY?trendIndexAtStageClientX(stage,event.clientX,points.length):Number(marker.dataset.trendMarker);openTrendDetail(index);});
+      marker.addEventListener('keydown',event=>{if(event.key==='Enter'||event.key===' '){event.preventDefault();openTrendDetail(marker.dataset.trendMarker);}});
+    });
+  }
+  document.querySelector('[data-trend-detail-close]')?.addEventListener('click',()=>{trendDetailDate=null;repaintTrend();});
+  const navigator=document.querySelector('#trendNavigator');
+  if(!navigator)return;
+  navigator.querySelectorAll('[data-navigator-handle]').forEach(handle=>handle.addEventListener('keydown',event=>{
+    const edge=handle.dataset.navigatorHandle,all=trendSeries(),selected=trendSelection(all),step=event.shiftKey?10:1;
+    let next=edge==='start'?selected.start:selected.end;
+    if(event.key==='ArrowLeft')next-=step;
+    else if(event.key==='ArrowRight')next+=step;
+    else if(event.key==='Home')next=edge==='start'?0:selected.start+1;
+    else if(event.key==='End')next=edge==='start'?selected.end-1:all.length-1;
+    else return;
+    event.preventDefault();
+    if(edge==='start')trendState.start=Math.max(0,Math.min(next,selected.end-1));
+    else trendState.end=Math.min(all.length-1,Math.max(next,selected.start+1));
+    trendState.range='custom';
+    repaintTrend();
+    requestAnimationFrame(()=>document.querySelector(`[data-navigator-handle="${edge}"]`)?.focus());
+  }));
+  navigator.addEventListener('pointerdown',event=>{
+    const all=trendSeries(),selected=trendSelection(all),rect=navigator.getBoundingClientRect(),target=event.target,handle=target.closest?.('[data-navigator-handle]'),selection=target.closest?.('.navigator-selection'),selectionRect=selection?.getBoundingClientRect(),mode=handle&&selection?.classList.contains('compact')?(event.clientX<(selectionRect.left+selectionRect.right)/2?'start':'end'):handle?.dataset.navigatorHandle||(selection?'move':'jump'),origin=indexForNavigator(event.clientX,rect,all.length),start=selected.start,end=selected.end;
+    if(mode==='jump'){
+      const span=end-start;
+      trendState.start=Math.max(0,Math.min(all.length-1-span,origin-Math.round(span/2)));
+      trendState.end=trendState.start+span;
+      trendState.range='custom';
+      repaintTrend();
+      return;
+    }
+    const move=e=>{
+      const idx=indexForNavigator(e.clientX,rect,all.length),delta=idx-origin;
+      if(mode==='start'){trendState.start=Math.max(0,Math.min(idx,end-1));trendState.end=end;}
+      else if(mode==='end'){trendState.start=start;trendState.end=Math.min(all.length-1,Math.max(idx,start+1));}
+      else{const span=end-start;trendState.start=Math.max(0,Math.min(all.length-1-span,start+delta));trendState.end=trendState.start+span;}
+      trendState.range='custom';
+      previewTrendNavigator(navigator,all);
+      previewTrendChart();
+    };
+    const up=()=>{document.removeEventListener('pointermove',move);document.removeEventListener('pointerup',up);document.removeEventListener('pointercancel',up);if(trendPreviewFrame!=null){cancelAnimationFrame(trendPreviewFrame);trendPreviewFrame=null;}repaintTrend();};
+    document.addEventListener('pointermove',move);
+    document.addEventListener('pointerup',up);
+    document.addEventListener('pointercancel',up);
+    event.preventDefault();
+  });
+}
+function openTrendDetail(index) { const item=trendSelection().points[Number(index)];if(item)openTrendDetailByDate(item.date); }
+function openTrendDetailByDate(date) { trendDetailDate=date;repaintTrend();requestAnimationFrame(()=>document.querySelector('.trend-detail-drawer')?.focus()); }
+
+function emptyState() { return `<section class="empty"><div class="empty-icon" aria-hidden="true"></div><p class="eyebrow">從第一筆紀錄開始</p><h2>建立你的退休現金流地圖</h2><p>匯入 CSV 交易紀錄後，系統會在此瀏覽器計算持股、成本與退休進度。</p><div><button class="primary" id="emptyImport">匯入 CSV</button><a class="secondary download-link" href="./my-stock-transactions.csv" download="my-stock-transactions.csv">下載持股範例</a></div><small>範例含 11 筆交易，支援自行買進、定期定額、股息再投入與配股</small></section>`; }
+function transactionGroups() {
+  return [...new Set(transactions.map(t => t.symbol))].sort().map(symbol => {
+    const rows = transactions.filter(t => t.symbol === symbol).sort((a,b) => b.date.localeCompare(a.date));
+    const quantity = rows.reduce((sum,t) => sum + Number(t.quantity), 0);
+    const totalCost = rows.reduce((sum,t) => sum + cost(t), 0);
+    return { symbol, rows, quantity, totalCost, averageCost: quantity ? totalCost / quantity : null };
+  });
+}
+function transactionReturn(transaction) {
+  const latest = lastPrice(transaction.symbol);
+  if (!latest) return { amount:null, percent:null };
+  return calculateUnrealizedReturn({ quantity:transaction.quantity, cost:cost(transaction), currentPrice:latest.close });
+}
+function fmtReturnPercent(value) {
+  if (value == null || !Number.isFinite(value)) return '—';
+  return `${value >= 0 ? '+' : ''}${value.toFixed(2)}%`;
+}
+function fmtReturnPercentDetail(value) {
+  return value == null || !Number.isFinite(value) ? '—' : `（${fmtReturnPercent(value)}）`;
+}
+function groupReturn(group) {
+  const latest = lastPrice(group.symbol);
+  if (!latest) return { amount:null, percent:null };
+  return calculateUnrealizedReturn({ quantity:group.quantity, cost:group.totalCost, currentPrice:latest.close });
+}
+function transactionUndoNotice() {
+  if (!transactionUndoRows.length) return '';
+  const [first] = transactionUndoRows;
+  const label = transactionUndoRows.length === 1 ? `已刪除 ${escapeHtml(first.symbol)} 的交易紀錄` : `已刪除 ${escapeHtml(first.symbol)} 群組的 ${money.format(transactionUndoRows.length)} 筆交易紀錄`;
+  return `<section class="budget-undo" role="status">${label}<button id="undoTransactionDelete">復原</button></section>`;
+}
+function transactionsPage() {
+  const groups = transactionGroups();
+  const undo = transactionUndoNotice();
+  const actions = `<div class="transaction-actions"><div class="transaction-page-actions"><button class="secondary" id="aiImportGuide">請 AI 整理</button><button class="secondary" data-transaction-import>匯入 CSV</button><button class="primary" data-add-transaction>新增交易</button></div><p class="transaction-import-help">先讓 AI 整理成標準 CSV，再匯入；資料只會儲存在此裝置。<a href="./my-stock-transactions.csv" download="my-stock-transactions.csv">下載持股範例</a></p></div>`;
+  return groups.length ? `${undo}<section class="panel transactions-panel"><div class="panel-title"><div><h2>交易紀錄</h2><p>依股票代號彙整；展開即可查看明細。</p></div>${actions}</div><div class="transaction-groups">${groups.map(group => {
+    const name = cacheFor(group.symbol)?.name;
+    const latest = lastPrice(group.symbol);
+    const marketValue = latest ? group.quantity * Number(latest.close) : null;
+    const unrealized = groupReturn(group);
+    return `<details class="transaction-group">
+      <summary>
+        <span class="group-symbol"><b>${escapeHtml(group.symbol)}</b>${name ? `<small>${escapeHtml(name)}</small>` : ''}</span>
+        <span><small>持有股數</small><b>${money.format(group.quantity)} 股</b></span>
+        <span><small>累積成本</small><b>${fmt(group.totalCost)}</b></span>
+        <span><small>平均成本</small><b>${fmtAverageCost(group.averageCost)}</b></span>
+        <span><small>最新價格</small><b>${latest ? fmtPerShare(latest.close) : '—'}</b>${latest ? `<small>${latest.date}</small>` : ''}</span>
+        <span><small>持股市值</small><b>${marketValue == null ? '等待價格資料' : fmt(marketValue)}</b></span>
+        <span><small>未實現損益</small><b class="return-amount ${unrealized.amount == null ? '' : unrealized.amount >= 0 ? 'positive' : 'negative'}">${fmtSignedMoney(unrealized.amount)}</b><small class="return-percent ${unrealized.percent == null ? '' : unrealized.percent >= 0 ? 'positive' : 'negative'}">${fmtReturnPercentDetail(unrealized.percent)}</small></span>
+        <span class="group-count">${group.rows.length} 筆 <i>⌄</i></span>
+      </summary>
+      <div class="group-actions"><p>共 ${money.format(group.rows.length)} 筆 ${escapeHtml(group.symbol)} 交易紀錄</p><button type="button" class="danger group-delete" data-delete-group="${escapeHtml(group.symbol)}" data-group-count="${group.rows.length}" aria-label="刪除 ${escapeHtml(group.symbol)} 群組的全部 ${group.rows.length} 筆交易">刪除整個群組</button></div>
+      <div class="group-table-wrap"><table><thead><tr><th>日期</th><th>取得方式</th><th>股數</th><th>成交價</th><th>手續費</th><th>成本</th><th>未實現損益</th><th>操作</th></tr></thead><tbody>${group.rows.map(t => {
+        const rowReturn = transactionReturn(t);
+        const returnClass = rowReturn.amount == null ? '' : rowReturn.amount >= 0 ? 'positive' : 'negative';
+        const label = `${escapeHtml(group.symbol)} 的${escapeHtml(ACQUISITIONS[t.acquisitionType] || '持股')}紀錄`;
+        return `<tr><td>${escapeHtml(t.date)}</td><td><span class="tag">${escapeHtml(ACQUISITIONS[t.acquisitionType] || '持股')}</span></td><td>${money.format(t.quantity)}</td><td>${t.price == null ? '—' : fmtPerShare(t.price)}</td><td>${Number(t.fee) ? fmt(t.fee) : '—'}</td><td>${fmt(cost(t))}</td><td class="return-value ${returnClass}"><b>${fmtSignedMoney(rowReturn.amount)}</b><small>${fmtReturnPercentDetail(rowReturn.percent)}</small></td><td><div class="row-actions"><button type="button" class="icon-btn edit" data-edit-transaction="${t.id}" aria-label="編輯 ${label}" title="編輯交易"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 20 4.2-1 10.9-10.9a2.1 2.1 0 0 0-3-3L5.2 16 4 20Z"/><path d="m14.8 6.3 3 3"/></svg></button><button type="button" class="icon-btn delete" data-id="${t.id}" aria-label="刪除 ${label}" title="刪除交易"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3m3 0-1 13H7L6 7m4 4v5m4-5v5"/></svg></button></div></td></tr>`;
+      }).join('')}</tbody></table></div>
+    </details>`;
+  }).join('')}</div></section>` : `${undo}<section class="panel transactions-panel"><div class="panel-title"><div><h2>交易紀錄</h2><p>新增一筆交易，或一次匯入既有紀錄。</p></div>${actions}</div><div class="empty compact"><div class="empty-icon" aria-hidden="true"></div><h2>尚未有交易紀錄</h2><p>請使用上方操作匯入 CSV，或手動新增第一筆交易。</p></div></section>`;
+}
+function transactionModal() {
+  if (!transactionModalOpen) return '';
+  const transaction=transactions.find(row=>row.id===transactionEditId),isEditing=Boolean(transaction),selectedType=transaction?.acquisitionType||'MANUAL_BUY';
+  return `<div class="modal-backdrop" id="transactionModalBackdrop"><section class="transaction-modal" role="dialog" aria-modal="true" aria-labelledby="transactionModalTitle"><div class="modal-header"><div><p class="eyebrow">${isEditing?'編輯紀錄':'手動新增'}</p><h2 id="transactionModalTitle">${isEditing?'編輯交易紀錄':'新增交易紀錄'}</h2></div><button class="modal-close" id="closeTransactionModal" aria-label="關閉">×</button></div><form id="transactionForm" novalidate><div class="form-error" id="transactionFormError" role="alert" tabindex="-1" hidden></div><div class="transaction-form-grid"><label>交易日期<input id="transactionDate" name="date" type="date" value="${escapeHtml(transaction?.date||today())}" required /></label><label>股票代號<input id="transactionSymbol" name="symbol" inputmode="numeric" placeholder="例如：00878" maxlength="12" value="${escapeHtml(transaction?.symbol||'')}" required autofocus /></label><label>取得方式<select name="acquisitionType" id="transactionType">${Object.entries(ACQUISITIONS).map(([key,label])=>`<option value="${key}" ${key===selectedType?'selected':''}>${label}</option>`).join('')}</select></label><label>股數<input id="transactionQuantity" name="quantity" type="number" min="0.0001" step="any" placeholder="例如：1000" value="${transaction?.quantity??''}" required /></label><label>成交價（元／股）<input name="price" id="transactionPrice" type="number" min="0" step="any" placeholder="例如：20.50" value="${transaction?.price??''}" required /></label><label>手續費（元）<input id="transactionFee" name="fee" type="number" min="0" step="any" value="${transaction?.fee??0}" required /></label></div><p class="form-hint" id="transactionFormHint">成本會以「股數 × 成交價 ＋ 手續費」計算。</p><div class="modal-actions"><button type="button" class="secondary" id="cancelTransaction">取消</button><button type="submit" class="primary" id="saveTransaction">${isEditing?'儲存變更':'儲存交易'}</button></div></form></section></div>`;
+}
+function aiImportPrompt() {
+  return `請將我提供的台灣股票交易資料整理為可匯入的 CSV。\n\n請只輸出 CSV 純文字，不要 Markdown、說明或程式碼區塊。第一列欄位必須完全是：\ndate,acquisition_type,symbol,quantity,price,fee\n\n整理規則：\n1. 日期使用 YYYY-MM-DD；原始資料缺少完整日期時，不要猜測。\n2. acquisition_type 只能使用：MANUAL_BUY、RECURRING_INVESTMENT、DIVIDEND_REINVESTMENT、STOCK_DIVIDEND。\n3. 只保留買進、定期定額、股息再投入與配股；賣出、轉出、借券等不支援紀錄請排除。\n4. symbol 保留台股股票代號，例如 00878、2330，不要轉成數字格式或補小數點。\n5. quantity 為正數股數；price 是每股成交價。配股（STOCK_DIVIDEND）的 price 留空。\n6. fee 為手續費；原始資料沒有時填 0。\n7. 無法確認欄位時不要臆測，該筆紀錄請排除。\n\n以下是我的原始資料：\n`;
+}
+function aiImportGuide() {
+  if (!aiImportGuideOpen) return '';
+  return `<div class="modal-backdrop ai-import-backdrop" id="aiImportBackdrop"><section class="ai-import-modal" role="dialog" aria-modal="true" aria-labelledby="aiImportTitle" aria-describedby="aiImportDescription"><div class="modal-header"><div><p class="eyebrow">AI 協助整理</p><h2 id="aiImportTitle">先整理，再匯入 CSV</h2></div><button class="modal-close" id="closeAiImportGuide" aria-label="關閉">×</button></div><p id="aiImportDescription">複製下方指令，連同券商對帳單、截圖或文字交給你常用的 AI；取得 CSV 後再回到這裡匯入。</p><textarea id="aiImportPrompt" class="ai-import-prompt" readonly aria-label="AI 整理持股指令">${aiImportPrompt()}</textarea><div class="ai-import-rules"><b>匯入前提醒</b><span>系統只接受買進相關紀錄；賣出資料目前不會納入持股計算。</span></div><div class="modal-actions"><button type="button" class="secondary" id="closeAiImportCancel">取消</button><button type="button" class="primary" id="copyAiImportPrompt">複製指令</button></div></section></div>`;
+}
+function dividendStockRow(symbol,year,rows,max) {
+  const values=Array.from({length:12},(_,index)=>{
+    const month=`${year}-${String(index+1).padStart(2,'0')}`;
+    const events=rows.filter(row=>row.basis.slice(0,7)===month);
+    return {month,events,value:events.reduce((sum,row)=>sum+row.amount,0)};
+  });
+  const cells=values.map(({month,events,value})=>{
+    const upcoming=events.some(isUpcomingDividend), amount=money.format(Math.round(value));
+    if (!value) return `<span class="heatmap-cell is-empty" aria-label="${symbol} ${month} 無股息"><i>—</i></span>`;
+    return `<button type="button" class="heatmap-cell has-value ${value/max>=.65?'is-strong':''} ${upcoming?'is-upcoming':''}" style="--intensity:${value/max}" data-dividend-month="${month}" data-dividend-symbol="${symbol}" aria-label="${symbol} ${month.replace('-',' 年 ')} 月股息 ${amount} 元，${upcoming?'尚未發放':'已入帳'}" aria-describedby="dividendTooltip"><i>${amount}</i>${upcoming?'<small>預計</small>':''}</button>`;
+  }).join('');
+  const total=values.reduce((sum,entry)=>sum+entry.value,0);
+  const upcoming=rows.filter(isUpcomingDividend).reduce((sum,row)=>sum+row.amount,0);
+  const paid=total-upcoming;
+  return `<div class="heatmap-row"><b><span>${symbol}</span><small title="${escapeHtml(cacheFor(symbol)?.name || '')}">${escapeHtml(cacheFor(symbol)?.name || '')}</small></b>${cells}<strong><span>${money.format(Math.round(total))}</span><small class="annual-breakdown"><span>入帳 ${money.format(Math.round(paid))}</span>${upcoming?`<span class="annual-upcoming">預計 ${money.format(Math.round(upcoming))}</span>`:''}</small></strong></div>`;
+}
+function dividendsPage() {
+  const d=dividendSummary();
+  if(!d.rows.length) return `<section class="empty compact"><div class="empty-icon" aria-hidden="true"></div><p class="eyebrow">配息資料</p><h2>尚未有可用配息資料</h2><p>按「同步市場資料」後，系統會依除息日前的持股推估每筆現金股利。</p><button class="primary" id="divSync">同步市場資料</button></section>`;
+  const years=[...new Set(d.months.map(month=>month.slice(0,4)))].sort().reverse();
+  const currentYear=String(new Date().getFullYear());
+  const selectedYear=years.includes(String(dividendYear)) ? String(dividendYear) : (years.includes(currentYear) ? currentYear : years[0]);
+  const monthLabels=['1 月','2 月','3 月','4 月','5 月','6 月','7 月','8 月','9 月','10 月','11 月','12 月'];
+  const annualRows=d.rows.filter(row=>row.basis.startsWith(selectedYear));
+  const symbols=[...new Set(annualRows.map(row=>row.symbol))].sort((a,b)=>a.localeCompare(b));
+  const monthlyValues=Array.from({length:12},(_,i)=>d.monthly[`${selectedYear}-${String(i+1).padStart(2,'0')}`]||0);
+  const cellValues=symbols.flatMap(symbol=>Array.from({length:12},(_,i)=>annualRows.filter(row=>row.symbol===symbol && row.basis.slice(5,7)===String(i+1).padStart(2,'0')).reduce((sum,row)=>sum+row.amount,0)));
+  const max=Math.max(...cellValues,1);
+  const total=monthlyValues.reduce((sum,value)=>sum+value,0);
+  const upcomingTotal=annualRows.filter(isUpcomingDividend).reduce((sum,row)=>sum+row.amount,0);
+  const monthCount=selectedYear===currentYear ? new Date().getMonth()+1 : 12;
+  const paidTotal=Array.from({length:monthCount},(_,i)=>d.paidMonthly[`${selectedYear}-${String(i+1).padStart(2,'0')}`]||0).reduce((sum,value)=>sum+value,0);
+  const average=selectedYear===currentYear ? paidTotal/monthCount : total/monthCount;
+  const headers=monthLabels.map(label=>`<span>${label}</span>`).join('');
+  const rows=symbols.map(symbol=>dividendStockRow(symbol,selectedYear,annualRows.filter(row=>row.symbol===symbol),max)).join('');
+  const totalCells=monthlyValues.map(value=>`<span>${value ? money.format(Math.round(value)) : '—'}</span>`).join('');
+  return `<section class="metrics dividend-metrics">${card(`${selectedYear} 年預估股息`,fmt(total),'依除息日前一日持股與每股現金股利預估，包含尚未發放項目。','green',false)}${card(`${selectedYear} 年平均月股息`,fmt(average),selectedYear===currentYear ? `今年 1 月至 ${monthCount} 月已發放股息的平均；尚未發放的預計股息不納入。` : '全年股息 ÷ 12 個月，無股息月份以 0 計算。','',false)}${card(`${selectedYear} 年尚未發放`,fmt(upcomingTotal),upcomingTotal ? '已公告發放日、目前尚未入帳的預計股息。' : '目前沒有已公告但尚未發放的股息。','gold',false)}</section><section class="panel dividend-heatmap-panel"><div class="panel-title"><div><p class="eyebrow">依${settings.dividendDateBasis==='PAYMENT_DATE'?'發放日':'除息日'}歸屬</p><h2>${selectedYear} 年股息月曆</h2><p>直接比較各股票每月股息；點選有金額的月份可查看計算明細。</p></div><div class="dividend-actions"><label for="dividendYear">年度</label><select id="dividendYear" aria-label="選擇股息年度">${years.map(year=>`<option value="${year}" ${year===selectedYear?'selected':''}>${year} 年</option>`).join('')}</select><button data-page="settings">計算設定 →</button></div></div><div class="heatmap-toolbar"><div class="heatmap-guide" aria-label="股息表圖例"><span><i class="legend-paid"></i>藍色：已入帳，深色代表金額較高</span><span><i class="legend-upcoming"></i>斜紋：尚未發放</span></div><span class="heatmap-unit">單位：元</span></div><p class="heatmap-scroll-hint">左右滑動查看全年月份；股票與全年合計會固定顯示。</p><div class="heatmap-scroll"><div class="dividend-heatmap"><div class="heatmap-head"><span>股票</span>${headers}<span>全年合計</span></div>${rows}<div class="heatmap-row heatmap-total"><b>月合計</b>${totalCells}<strong><span>${money.format(Math.round(total))}</span><small>全年預估</small></strong></div></div></div><div id="dividendTooltip" class="dividend-tooltip" role="status" aria-live="polite"></div></section>`;
+}
+function dividendTooltipContent(month,symbol) {
+  const rows=dividendReceipts().filter(row=>row.basis.slice(0,7)===month && (!symbol || row.symbol===symbol)).sort((a,b)=>b.amount-a.amount);
+  if(!rows.length) return '';
+  const basisLabel=settings.dividendDateBasis==='EX_DIVIDEND_DATE' ? '除息日' : '發放日';
+  const primaryDate=row=>settings.dividendDateBasis==='EX_DIVIDEND_DATE' ? row.exDate : row.paymentDate;
+  return `<div class="dividend-tooltip-rows compact">${rows.map(row=>`<div><span>${basisLabel} ${primaryDate(row) || '待確認'}<small>${money.format(row.eligible)} 股 × ${fmtPerShare(row.cash)}</small></span><strong>${fmt(row.amount)}${isUpcomingDividend(row)?'<small>預計</small>':''}</strong></div>`).join('')}</div>`;
+}
+function bindDividendTooltip() {
+  const tooltip=document.querySelector('#dividendTooltip');
+  if(!tooltip) return;
+  const hide=()=>tooltip.classList.remove('show');
+  document.querySelectorAll('.heatmap-cell.has-value').forEach(cell=>{
+    const positionByCell=()=>{
+      const rect=cell.getBoundingClientRect(), width=230, gap=10;
+      tooltip.style.left=`${Math.max(gap,Math.min(rect.left,window.innerWidth-width-gap))}px`;
+      tooltip.style.top=`${Math.max(gap,Math.min(rect.bottom+gap,window.innerHeight-190))}px`;
+    };
+    const show=event=>{
+      tooltip.innerHTML=dividendTooltipContent(cell.dataset.dividendMonth,cell.dataset.dividendSymbol);
+      tooltip.classList.add('compact');
+      tooltip.classList.add('show');
+      event?.clientX ? move(event) : positionByCell();
+    };
+    const move=event=>{
+      const gap=14, width=280;
+      tooltip.style.left=`${Math.min(event.clientX+gap,window.innerWidth-width-gap)}px`;
+      tooltip.style.top=`${Math.min(event.clientY+gap,window.innerHeight-190)}px`;
+    };
+    cell.addEventListener('mouseenter',show); cell.addEventListener('mousemove',move); cell.addEventListener('mouseleave',hide);
+    cell.addEventListener('focus',show); cell.addEventListener('blur',hide);
+    cell.addEventListener('keydown',event=>{ if(event.key==='Escape'){ hide(); cell.blur(); } });
+  });
+}
+function marketSyncPanel(summary = marketSyncSummary()) {
+  const synced=marketCaches.filter(cache=>cache.lastSuccessAt||cache.syncedAt);
+  const lastSuccess=synced.length?new Date(Math.max(...synced.map(cache=>new Date(cache.lastSuccessAt||cache.syncedAt)))):null;
+  return `<section class="panel market-sync-panel"><div class="panel-title"><div><p class="eyebrow">公開資料快取</p><h2>市場資料同步</h2><p>首次匯入會立即同步至最近完整收盤日；當日日股價由 FinMind 約 17:30 更新，系統會在 18:00 後自動增量同步。價格與配息分開記錄狀態，失敗不會清除舊快取。</p></div><button class="primary" id="marketSync" ${marketSyncInProgress?'disabled aria-busy="true"':''}>${syncProgress || '重新整理全部市場資料'}</button></div><div class="diagnostic"><span>完整／持有股票</span><b>${summary.readyCount}／${summary.symbols.length} 檔</b><span>預期檢查至</span><b>${summary.target}</b><span>最新實際收盤</span><b>${summary.latestDate||'尚未取得'}</b><span>最後成功</span><b>${lastSuccess?lastSuccess.toLocaleString('zh-TW'):'尚未同步'}</b>${summary.errorCount?`<span>需重試</span><b class="diagnostic-error">${summary.errorCount} 檔（已保留舊資料）</b>`:''}</div></section>`;
+}
+function marketDataPage() { return `${marketSyncPanel()}${marketDataContent()}`; }
+function marketDataContent() {
+  const syncSummary=marketSyncSummary(), heldRows=new Map(syncSummary.rows.map(row=>[row.symbol,row])), stocks=marketCacheDisplayRows(syncSummary);
+  syncSummary.rows=stocks.map(item=>heldRows.get(item.symbol)||{symbol:item.symbol,cache:item,hasPrice:Boolean(lastMarketDate(item)),priceReady:true,dividendReady:true,errors:item.syncErrors||[],cachedOnly:true});
+  if (!stocks.length) { const paused=isMarketAutoSyncPaused();return `<section class="panel market-data-table"><div class="panel-title"><div><p class="eyebrow">公開資料快取</p><h2>市場資料</h2><p>${marketSyncInProgress?'正在建立第一份市場快取。':paused?'市場快取已由你手動清除，目前不會立即自動重建。':'尚未有市場快取；匯入交易後系統會立即同步至最近完整收盤日。'}</p></div></div><p class="market-empty" role="status" aria-live="polite">${syncProgress||(paused?'可按右上角「同步資料」立即重建；否則會在下一個 18:00 排程更新。':'若自動同步失敗，可使用右上角「同步資料」重試。')}</p></section>`; }
+  const stock=stocks.find(item=>item.symbol===marketSymbol) || stocks[0];
+  marketSymbol=stock.symbol;
+  const prices=[...(stock.prices || [])].sort((a,b)=>b.date.localeCompare(a.date));
+  const months=[...new Set(prices.map(row=>row.date.slice(0,7)))].sort().reverse();
+  const selectedMonth=months.includes(marketPriceMonth) ? marketPriceMonth : months[0];
+  marketPriceMonth=selectedMonth || null;
+  const monthRows=selectedMonth ? prices.filter(row=>row.date.startsWith(selectedMonth)) : [];
+  const [selectedYear, selectedMonthNumber]=selectedMonth ? selectedMonth.split('-') : ['', ''];
+  const years=[...new Set(months.map(month=>month.slice(0,4)))].sort().reverse();
+  const availableMonths=months.filter(month=>month.startsWith(selectedYear)).map(month=>month.slice(5));
+  const events=[...(stock.dividends || [])].filter(event=>Number(event.cash)>0 && (event.paymentDate || event.exDate)).sort((a,b)=>(b.paymentDate || b.exDate || '').localeCompare(a.paymentDate || a.exDate || ''));
+  const latest=prices[0], previous=prices[1], change=latest && previous ? Number(latest.close)-Number(previous.close) : null;
+  const changeRate=change != null && Number(previous.close) ? change/Number(previous.close)*100 : null;
+  const selectedState=syncSummary.rows.find(row=>row.symbol===stock.symbol), selectedStatus=selectedState?.cachedOnly?'無持股・快取保留':selectedState?.errors.length?'部分同步失敗':selectedState?.priceReady&&selectedState?.dividendReady?'已檢查完成':'等待更新';
+  return `<section class="panel market-browser"><div class="panel-title market-browser-heading"><div><p class="eyebrow">公開資料快取</p><h2>依股票瀏覽市場資料</h2><p>選擇一檔股票後，可一起核對其每日價格與配息事件。</p></div><div class="market-stock-picker"><label for="marketSymbol">股票</label><select id="marketSymbol">${stocks.map(item=>`<option value="${item.symbol}" ${item.symbol===stock.symbol?'selected':''}>${item.symbol}${item.name ? ` · ${item.name}` : ''}</option>`).join('')}</select></div></div><div class="market-stock-summary"><span><b>${stock.symbol}</b>${stock.name ? ` ${stock.name}` : ''}</span><span>價格 ${money.format(prices.length)} 筆</span><span>配息 ${money.format(events.length)} 筆</span><span class="sync-chip ${selectedState?.errors.length?'has-error':'is-ready'}">${selectedStatus}</span>${latest ? `<span>最新收盤 <b>${fmtPerShare(latest.close)}</b> <small>${latest.date}</small> <em class="${change >= 0 ? 'positive' : 'negative'}">${change == null ? '' : `${change >= 0 ? '+' : ''}${perShare.format(change)}（${changeRate >= 0 ? '+' : ''}${changeRate.toFixed(2)}%）`}</em></span>` : '<span>尚無可用收盤價</span>'}</div>${selectedState?.errors.length?`<div class="sync-inline-error" role="alert"><b>${stock.symbol} 尚有資料未更新</b><span>${selectedState.errors.map(escapeHtml).join('；')}。既有快取已保留，系統會自動重試。</span></div>`:''}</section><section class="panel table-panel market-data-table price-data-panel"><div class="panel-title market-table-heading"><div><h2>每日價格</h2><p>${selectedMonth ? `${selectedYear} 年 ${Number(selectedMonthNumber)} 月共 ${monthRows.length} 個交易日；價格為未還原之 OHLC 資料。` : '此股票尚無價格資料。'}</p></div>${months.length ? `<div class="market-date-picker"><label>年份<select id="marketPriceYear">${years.map(year=>`<option value="${year}" ${year===selectedYear?'selected':''}>${year} 年</option>`).join('')}</select></label><label>月份<select id="marketPriceMonth">${availableMonths.map(month=>`<option value="${month}" ${month===selectedMonthNumber?'selected':''}>${Number(month)} 月</option>`).join('')}</select></label></div>` : ''}</div>${monthRows.length ? `<div class="price-table-wrap"><table><thead><tr><th>日期</th><th>開盤</th><th>最高</th><th>最低</th><th>收盤</th><th>成交量</th></tr></thead><tbody>${monthRows.map(row=>`<tr><td>${row.date}</td><td>${fmtPerShare(row.open)}</td><td>${fmtPerShare(row.high)}</td><td>${fmtPerShare(row.low)}</td><td><b>${fmtPerShare(row.close)}</b></td><td>${row.volume == null ? '—' : money.format(row.volume)}</td></tr>`).join('')}</tbody></table></div>` : `<p class="market-empty">此月份沒有交易日資料。</p>`}</section><section class="panel table-panel market-data-table"><div class="panel-title"><div><h2>配息事件</h2><p>${events.length ? `${events.length} 筆 ${stock.symbol} 配息事件` : `${stock.symbol} 已檢查，目前沒有配息事件`}；資料來源：FinMind。</p></div></div>${events.length ? `<div class="price-table-wrap"><table><thead><tr><th>除息日</th><th>發放日</th><th>現金股利／股</th><th>股票股利</th><th>公告日</th></tr></thead><tbody>${events.map(event=>`<tr><td>${event.exDate || '—'}</td><td>${event.paymentDate || '—'}</td><td><b>${fmtPerShare(event.cash)}</b></td><td>${event.stock ? money.format(event.stock) : '—'}</td><td>${event.announcementDate || '—'}</td></tr>`).join('')}</tbody></table></div>` : `<p class="market-empty">查無配息不等於同步失敗；可由上方同步狀態確認。</p>`}</section>`;
+}
+function settingSwitch(id, title, description, checked, extraClass = '') { return `<label class="setting-switch ${extraClass}"><input type="checkbox" id="${id}" data-setting-control ${checked?'checked':''} /><span class="setting-switch-copy"><b>${title}</b><small>${description}</small></span><span class="setting-switch-track" aria-hidden="true"></span></label>`; }
+function trendEventMarkerSettingInputs() { return TREND_EVENT_MARKER_SETTINGS.map(({id,label})=>settingSwitch(id,label,'在走勢圖上標記這類交易。',settings[id] ?? true)).join(''); }
+function chartSettingsPanel() {
+  const showReturn = settings.showTotalReturn ?? true;
+  return `<section class="panel setting chart-settings"><div class="chart-settings-heading"><div><p class="eyebrow">圖表設定</p><h2>資產走勢顯示內容</h2><p>選擇要在走勢圖上標出的資訊。調整後會立即套用並自動儲存。</p></div></div><div class="chart-setting-section"><div class="chart-setting-section-title"><b>里程碑</b><span>呈現資產累積與投資成果的重要節點。</span></div><div class="setting-switch-grid">${settingSwitch('showTotalAsset','資產里程碑','標記持股市值跨越新門檻的時間點。',settings.showTotalAsset ?? true)}${settingSwitch('showTotalReturn','累積成果里程碑','標記累積投資成果跨越新門檻的時間點。',showReturn)}</div><label class="setting-number-field ${showReturn?'':'is-disabled'}">累積成果的標記間隔<input id="gainMilestoneInterval" data-setting-control type="number" min="1" max="10000" step="1" inputmode="numeric" value="${gainMilestoneInterval()/10000}" ${showReturn?'':'disabled'} aria-describedby="gainMilestoneIntervalHint" /><small id="gainMilestoneIntervalHint">單位為萬；可設定 1～10000，代表每累積 1 萬～10000 萬顯示一次。</small></label></div><div class="chart-setting-section"><div class="chart-setting-section-title"><b>交易事件點</b><span>只顯示你想在圖上回顧的交易類型。</span></div><div class="setting-switch-grid event-switch-grid">${trendEventMarkerSettingInputs()}</div></div><div class="chart-setting-section tooltip-setting-section"><div class="chart-setting-section-title"><b>提示內容</b><span>滑過走勢圖資料點時，預先展開的交易筆數。</span></div><label class="setting-number-field">直接顯示的交易筆數<input id="trendTooltipEventLimit" data-setting-control type="number" min="1" max="20" step="1" inputmode="numeric" value="${trendTooltipEventLimit()}" aria-describedby="trendTooltipEventLimitHint" /><small id="trendTooltipEventLimitHint">可設定 1～20 筆；其餘交易可點選查看完整明細。</small></label></div></section>`;
+}
+function budgetItemFromForm(form) {
+  const data=new FormData(form), mode=String(data.get('calculationMode')), amount=mode==='REPLACEMENT' ? form.querySelector('#budgetReplacementAmount')?.value : data.get('occurrenceAmount');
+  return { bucket:String(data.get('bucket')), category:String(data.get('category')), name:String(data.get('name')||'').trim(), calculationMode:mode, occurrenceAmount:String(amount||''), frequency:String(data.get('frequency')||'MONTHLY'), intervalCount:String(data.get('intervalCount')||'1'), replacementCycleYears:String(data.get('replacementCycleYears')||'4'), note:String(data.get('note')||'').trim() };
+}
+function showBudgetErrors(form, errors) {
+  form.querySelectorAll('.field-error').forEach(el=>el.textContent=''); form.querySelectorAll('[aria-invalid]').forEach(el=>el.removeAttribute('aria-invalid'));
+  errors.forEach(error=>{const field=form.querySelector(`#${error.field}`);let hint=form.querySelector(`#${error.field}-error`);if(field)field.setAttribute('aria-invalid','true');if(field&&!hint){hint=document.createElement('small');hint.id=`${error.field}-error`;hint.className='field-error';field.insertAdjacentElement('afterend',hint);const describedBy=field.getAttribute('aria-describedby')||'';field.setAttribute('aria-describedby',`${describedBy} ${hint.id}`.trim());}if(hint)hint.textContent=error.message;});
+  const summary=form.querySelector('#budgetErrorSummary'); summary.hidden=false; summary.querySelector('ul').innerHTML=errors.map(error=>`<li><a href="#${error.field}">${error.message}</a></li>`).join(''); summary.focus();
+}
+function validateBudgetItem(item) {
+  const errors=[];
+  if (!item.name) errors.push({field:'budgetName',message:'請填寫項目名稱。'});
+  if (item.occurrenceAmount === '' || !(Number(item.occurrenceAmount) >= 0)) errors.push({field:item.calculationMode==='REPLACEMENT'?'budgetReplacementAmount':'budgetAmount',message:'請填寫 0 元以上的金額。'});
+  if (item.calculationMode==='REPLACEMENT' && !(Number(item.replacementCycleYears)>=1 && Number(item.replacementCycleYears)<=50)) errors.push({field:'budgetReplacementCycle',message:'汰換週期請填寫 1 到 50 年。'});
+  if (item.calculationMode==='RECURRING' && ['EVERY_N_MONTHS','EVERY_N_YEARS'].includes(item.frequency) && !(Number(item.intervalCount)>=1 && Number(item.intervalCount)<=120)) errors.push({field:'budgetInterval',message:'間隔請填寫 1 到 120。'});
+  return errors;
+}
+function mirrorBudgetAmount(source) {
+  const recurring=document.querySelector('#budgetAmount'), replacement=document.querySelector('#budgetReplacementAmount');
+  if(!recurring||!replacement)return;
+  if(source==='replacement') recurring.value=replacement.value;
+  else replacement.value=recurring.value;
+  updateBudgetPreview();
+}
+function updateBudgetPreview() {
+  const form=document.querySelector('#budgetItemForm'); if(!form) return; const item=budgetItemFromForm(form), annual=annualBudget(item), preview=document.querySelector('#budgetPreview'); if(preview)preview.textContent=`每年 ${fmt(annual)} · 每月 ${fmt(annual/12)}`;
+  const mode=item.calculationMode==='REPLACEMENT', frequencyField=document.querySelector('#budgetFrequencyField'), intervalField=document.querySelector('#budgetIntervalField'), recurringFields=document.querySelector('#budgetRecurringFields'), replacementFields=document.querySelector('#budgetReplacementFields'), customMonths=item.frequency==='EVERY_N_MONTHS', customYears=item.frequency==='EVERY_N_YEARS';
+  if(frequencyField)frequencyField.hidden=mode;if(recurringFields)recurringFields.hidden=mode;if(replacementFields)replacementFields.hidden=!mode;
+  if(intervalField){intervalField.hidden=mode || !(customMonths||customYears);const label=intervalField.firstChild,hint=intervalField.querySelector('small');if(label?.nodeType===3)label.nodeValue=customMonths?'每隔幾個月？':'每隔幾年？';if(hint)hint.textContent=customMonths?'例如每 3 個月一次。':'例如每 2 年一次。';}
+  document.querySelectorAll('.budget-mode-card').forEach(card=>card.classList.toggle('selected',card.querySelector('input')?.checked));
+  const prompt=document.querySelector('#replacementSuggestion'), name=item.name, isDurable=item.category==='REPLACEMENT'||/(手機|平板|電腦|筆電|螢幕|家電|家具|車|裝修)/.test(name); if(prompt)prompt.hidden=mode||!isDurable;
+}
+async function saveBudgetItem(event) { event.preventDefault(); const form=event.currentTarget,item=budgetItemFromForm(form),errors=validateBudgetItem(item); if(errors.length){showBudgetErrors(form,errors);return;} const now=new Date().toISOString(), existing=budgetItems.find(row=>row.id===budgetEditId), sortOrder=existing?.bucket===item.bucket ? existing.sortOrder : budgetItems.filter(row=>row.bucket===item.bucket).length, record={...existing,...item,id:existing?.id||uid(),planId:budgetPlan()?.id||'default',isActive:existing?.isActive??true,sortOrder,createdAt:existing?.createdAt||now,updatedAt:now}; await budgetItemRepository.save(record); budgetEditId=null; budgetDraft=null; budgetEditorOpen=false; await load(); toast(existing?'已儲存預算項目':'已新增預算項目'); }
+async function setBudgetBuffer(rate) { const plan=budgetPlan(); if(!plan)return; const normalized=Math.max(0,Math.min(50,Number(rate)||0)); const next={...plan,bufferRateBps:Math.round(normalized*100),updatedAt:new Date().toISOString()};await budgetPlanRepository.save(next);budgetPlans=[next];render(); }
+async function setBudgetTargetMode(mode) { const plan=budgetPlan();if(!plan)return;const next={...plan,selectedTarget:mode,updatedAt:new Date().toISOString()};await budgetPlanRepository.save(next);budgetPlans=[next];render(); }
+function focusBudgetEditor() { requestAnimationFrame(()=>document.querySelector('#budgetName')?.focus()); }
+function openBudgetEditor(draft=null) { budgetEditId=null; budgetDraft=draft; budgetEditorOpen=true; render(); focusBudgetEditor(); }
+function closeBudgetEditor() { budgetEditId=null; budgetDraft=null; budgetEditorOpen=false; render(); }
+function addBudgetSuggestion(index) { const suggestion=BUDGET_SUGGESTIONS[index];if(!suggestion)return;openBudgetEditor({bucket:'NEED',category:suggestion.category,name:suggestion.name,calculationMode:suggestion.category==='REPLACEMENT'?'REPLACEMENT':'RECURRING',occurrenceAmount:'',frequency:'ANNUAL',intervalCount:'1',replacementCycleYears:'4',note:''}); }
+async function deleteBudgetItem(id) {
+  const item = budgetItems.find(row => row.id === id);
+  if (!item || !await confirmDestructive({
+    title: `刪除「${item.name}」？`,
+    description: '刪除後，這筆支出不再計入退休目標。',
+    details: [`退休月現金流目標將減少 ${fmt(annualBudget(item) / 12)}。`, '刪除後可在 10 秒內復原。'],
+    confirmLabel: '刪除項目',
+  })) return;
+  await budgetItemRepository.remove(id);
+  budgetUndoItem = item;
+  clearTimeout(budgetUndoTimer);
+  budgetUndoTimer = setTimeout(() => { budgetUndoItem = null; if (page === 'budget') render(); }, 10000);
+  await load();
+  toast(`已刪除「${item.name}」`);
+}
+async function restoreBudgetItem() { if(!budgetUndoItem)return;await budgetItemRepository.save(budgetUndoItem);budgetUndoItem=null;clearTimeout(budgetUndoTimer);await load();toast('已復原預算項目'); }
+async function moveBudgetItem(id, direction, bucket) {
+  const visible=orderedBudgetItems().filter(item=>item.bucket===bucket);
+  const currentIndex=visible.findIndex(item=>item.id===id), targetIndex=currentIndex+(direction==='up'?-1:1);
+  if(currentIndex<0 || targetIndex<0 || targetIndex>=visible.length)return;
+  const current=visible[currentIndex]; [visible[currentIndex],visible[targetIndex]]=[visible[targetIndex],visible[currentIndex]];
+  const nextById=new Map(visible.map((item,index)=>[item.id,{...item,sortOrder:index,updatedAt:new Date().toISOString()}]));
+  const updates=[...nextById.values()]; await budgetItemRepository.saveMany(updates);
+  budgetItems=budgetItems.map(item=>nextById.get(item.id)||item);
+  render();
+  toast(`已將「${current.name}」${direction==='up'?'上移':'下移'}`);
+}
+function stageTransactionsForUndo(rows) {
+  transactionUndoRows = rows;
+  clearTimeout(transactionUndoTimer);
+  transactionUndoTimer = setTimeout(() => {
+    transactionUndoRows = [];
+    if (page === 'transactions') render();
+  }, 10000);
+}
+async function restoreDeletedTransactions() {
+  if (!transactionUndoRows.length) return;
+  const rows = transactionUndoRows;
+  transactionUndoRows = [];
+  clearTimeout(transactionUndoTimer);
+  await transactionRepository.saveMany(rows);
+  await load();
+  toast(rows.length === 1 ? '已復原交易紀錄' : `已復原 ${money.format(rows.length)} 筆交易紀錄`);
+}
+function startBudgetItem() { openBudgetEditor(); }
+function bindBudgetPage() {
+  document.querySelector('#startBudget')?.addEventListener('click',startBudgetItem);
+  document.querySelector('#addBudgetItem')?.addEventListener('click',()=>openBudgetEditor());
+  document.querySelectorAll('[data-budget-suggestion]').forEach(button=>button.addEventListener('click',()=>addBudgetSuggestion(Number(button.dataset.budgetSuggestion))));
+  document.querySelector('#budgetItemForm')?.addEventListener('submit',saveBudgetItem); document.querySelectorAll('input[name="calculationMode"]').forEach(input=>input.addEventListener('change',updateBudgetPreview));document.querySelector('#budgetFrequency')?.addEventListener('change',updateBudgetPreview);document.querySelector('#budgetCategory')?.addEventListener('change',updateBudgetPreview);document.querySelector('#budgetName')?.addEventListener('input',updateBudgetPreview);document.querySelector('#budgetAmount')?.addEventListener('input',()=>mirrorBudgetAmount('recurring'));document.querySelector('#budgetReplacementAmount')?.addEventListener('input',()=>mirrorBudgetAmount('replacement'));document.querySelector('#budgetInterval')?.addEventListener('input',updateBudgetPreview);document.querySelector('#budgetReplacementCycle')?.addEventListener('input',updateBudgetPreview);document.querySelector('#useReplacementMode')?.addEventListener('click',()=>{document.querySelector('#budgetModeReplacement').checked=true;updateBudgetPreview();});
+  updateBudgetPreview(); document.querySelector('#cancelBudgetEdit')?.addEventListener('click',closeBudgetEditor);document.querySelectorAll('[data-budget-edit]').forEach(button=>button.addEventListener('click',()=>{budgetEditId=button.dataset.budgetEdit;budgetDraft=null;budgetEditorOpen=true;render();focusBudgetEditor();}));document.querySelectorAll('[data-budget-toggle]').forEach(button=>button.addEventListener('click',async()=>{const item=budgetItems.find(row=>row.id===button.dataset.budgetToggle);if(!item)return;await budgetItemRepository.save({...item,isActive:item.isActive===false,updatedAt:new Date().toISOString()});await load();}));document.querySelectorAll('[data-budget-move]').forEach(button=>button.addEventListener('click',()=>moveBudgetItem(button.dataset.budgetId,button.dataset.budgetMove,button.dataset.budgetBucket)));document.querySelectorAll('[data-budget-delete]').forEach(button=>button.addEventListener('click',()=>deleteBudgetItem(button.dataset.budgetDelete)));document.querySelector('#undoBudgetDelete')?.addEventListener('click',restoreBudgetItem);
+}
+function bind() {
+  document.querySelectorAll('[data-page]').forEach(element => element.onclick = () => navigateToPage(element.dataset.page));
+  document.querySelector('.brand')?.addEventListener('click', event => { event.preventDefault(); navigateToPage('overview'); });
+  document.querySelectorAll('[data-onboarding-action]').forEach(button => button.addEventListener('click', async () => {
+    if (button.dataset.onboardingAction === 'budget') {
+      navigateToPage('budget');
+      await startBudgetItem();
+    } else {
+      navigateToPage('transactions');
+    }
+  }));
+  if (page === 'budget') bindBudgetPage();
+  bindTrendInteractions();
+  bindDividendTooltip();
+  document.querySelector('#dividendYear')?.addEventListener('change', event => { dividendYear=event.target.value; render(); });
+  document.querySelector('#marketSymbol')?.addEventListener('change', event => { marketSymbol=event.target.value; marketPriceMonth=null; render(); });
+  document.querySelector('#marketPriceYear')?.addEventListener('change', event => { const firstMonth=[...(cacheFor(marketSymbol)?.prices || [])].map(row=>row.date.slice(0,7)).filter(month=>month.startsWith(event.target.value)).sort().reverse()[0]; marketPriceMonth=firstMonth || null; render(); });
+  document.querySelector('#marketPriceMonth')?.addEventListener('change', event => { const year=document.querySelector('#marketPriceYear')?.value; marketPriceMonth=year ? `${year}-${event.target.value}` : null; render(); });
+  document.querySelector('#statusSync')?.addEventListener('click',()=>syncMarket()); document.querySelector('#marketSync')?.addEventListener('click',()=>syncMarket()); document.querySelector('#divSync')?.addEventListener('click',()=>syncMarket());
+  const imp = () => filePicker('text/csv,.csv', importCsv); document.querySelector('#importBtn')?.addEventListener('click',imp); document.querySelector('#emptyImport')?.addEventListener('click',imp); document.querySelectorAll('[data-transaction-import]').forEach(button=>button.addEventListener('click',imp));
+  document.querySelector('#aiImportGuide')?.addEventListener('click',()=>{ aiImportGuideOpen=true; render(); requestAnimationFrame(()=>document.querySelector('#copyAiImportPrompt')?.focus()); });
+  const closeAiGuide=()=>{ aiImportGuideOpen=false; render(); requestAnimationFrame(()=>document.querySelector('#aiImportGuide')?.focus()); };
+  document.querySelector('#closeAiImportGuide')?.addEventListener('click',closeAiGuide); document.querySelector('#closeAiImportCancel')?.addEventListener('click',closeAiGuide); document.querySelector('#aiImportBackdrop')?.addEventListener('click',event=>{ if(event.target===event.currentTarget) closeAiGuide(); }); document.querySelector('#copyAiImportPrompt')?.addEventListener('click',copyAiImportPrompt);
+  document.querySelectorAll('[data-add-transaction]').forEach(button => button.addEventListener('click', openTransactionModal));
+  document.querySelectorAll('[data-edit-transaction]').forEach(button => button.addEventListener('click',()=>openTransactionModal(button.dataset.editTransaction)));
+  document.querySelector('#closeTransactionModal')?.addEventListener('click', closeTransactionModal);
+  document.querySelector('#cancelTransaction')?.addEventListener('click', closeTransactionModal);
+  document.querySelector('#transactionModalBackdrop')?.addEventListener('click', event => { if (event.target === event.currentTarget) closeTransactionModal(); });
+  document.querySelector('#transactionType')?.addEventListener('change', updateTransactionPriceField);
+  document.querySelectorAll('#transactionForm input').forEach(input=>input.addEventListener('input',()=>input.removeAttribute('aria-invalid')));
+  document.querySelector('#transactionForm')?.addEventListener('submit', saveManualTransaction);
+  if (transactionModalOpen) updateTransactionPriceField();
+  document.querySelectorAll('.delete').forEach(x => x.onclick = async() => {
+    const transaction = transactions.find(row => row.id === x.dataset.id);
+    if (!transaction || !await confirmDestructive({title:'刪除這筆交易紀錄？',description:'這筆交易會從持股成本與退休試算中移除。',details:['刪除後可在 10 秒內復原。'],confirmLabel:'刪除交易'})) return;
+    await transactionRepository.remove(transaction.id);
+    stageTransactionsForUndo([transaction]);
+    await load();
+    toast('已刪除交易紀錄');
+  });
+  document.querySelectorAll('[data-delete-group]').forEach(button => button.addEventListener('click', async () => {
+    const symbol = button.dataset.deleteGroup;
+    const rows = transactions.filter(transaction => transaction.symbol === symbol);
+    const stockName = cacheFor(symbol)?.name?.trim();
+    const stockLabel = stockName || symbol;
+    const stockDetail = stockName ? `股票代號：${symbol}` : '';
+    if (!rows.length || !await confirmDestructive({title:`刪除「${stockLabel}」全部交易？`,description:'整個股票群組的交易紀錄都會被移除。',details:[stockDetail, `共 ${rows.length} 筆交易紀錄。`, '刪除後可在 10 秒內復原。'].filter(Boolean),confirmLabel:'刪除整個群組'})) return;
+    button.disabled = true;
+    await transactionRepository.removeMany(rows.map(transaction => transaction.id));
+    stageTransactionsForUndo(rows);
+    await load();
+    toast(`已刪除 ${stockName ? `${stockName}（${symbol}）` : symbol} 群組的 ${rows.length} 筆交易紀錄`);
+  }));
+  document.querySelector('#undoTransactionDelete')?.addEventListener('click', restoreDeletedTransactions);
+  document.querySelectorAll('[data-buffer-rate]').forEach(button=>button.addEventListener('click',()=>setBudgetBuffer(button.dataset.bufferRate)));
+  document.querySelector('#customBufferRate')?.addEventListener('change',event=>setBudgetBuffer(event.target.value));
+  document.querySelector('#budgetTargetMode')?.addEventListener('change',event=>setBudgetTargetMode(event.target.value));
+  let settingsSaveTimer;
+  const persistSettings = async () => {
+    const tooltipInput=document.querySelector('#trendTooltipEventLimit');
+    if (tooltipInput && tooltipInput.value === '') return;
+    const eventMarkers=Object.fromEntries(TREND_EVENT_MARKER_SETTINGS.map(({id})=>[id,document.querySelector(`#${id}`)?.checked ?? true]));
+    const status=document.querySelector('#settingsSaveStatus');
+    if(status)status.textContent='正在自動儲存…';
+    settings={...settings,dividendDateBasis:document.querySelector('#basis')?.value || settings.dividendDateBasis,trendTooltipEventLimit:normaliseTrendTooltipEventLimit(tooltipInput?.value),showTotalAsset:document.querySelector('#showTotalAsset')?.checked ?? true,showTotalReturn:document.querySelector('#showTotalReturn')?.checked ?? true,gainMilestoneInterval:normaliseGainMilestoneInterval(Number(document.querySelector('#gainMilestoneInterval')?.value)*10000),...eventMarkers};
+    await settingsRepository.save(settings);
+    if(status){status.textContent='已自動儲存';setTimeout(()=>{if(status.isConnected)status.textContent='所有變更會自動儲存';},1800);}
+  };
+  const scheduleSettingsSave = () => { clearTimeout(settingsSaveTimer); settingsSaveTimer=setTimeout(()=>void persistSettings(),500); };
+  document.querySelectorAll('[data-setting-control]').forEach(control=>{
+    control.addEventListener('change',()=>{
+      if(control.id==='showTotalReturn') void persistSettings().then(render);
+      else void persistSettings();
+    });
+    if(control.type==='number')control.addEventListener('input',scheduleSettingsSave);
+  });
+  document.querySelector('#backup')?.addEventListener('click', backup); document.querySelector('#restore')?.addEventListener('change', e => restore(e.target.files[0]));
+  document.querySelector('#clearMarket')?.addEventListener('click',async()=>{if(await confirmDestructive({title:'清除市場快取？',description:'價格與配息快取會被移除，且不會立刻自動重抓。',details:['交易紀錄與退休規劃不會受到影響。','可稍後手動同步，否則等下一個 18:00 排程更新。'],confirmLabel:'清除快取'})){const pausedUntil=nextMarketBoundary().toISOString();await marketCacheRepository.clear();settings={...settings,lastSuccessfulMarketSyncDate:null,lastMarketSyncAttemptDate:null,marketAutoSyncPausedUntil:pausedUntil};await settingsRepository.save(settings);await load();toast('市場快取已清除；自動重建暫停至下次排程');}});
+  document.querySelector('#clearAll')?.addEventListener('click',async()=>{if(await confirmDestructive({title:'清除全部個人資料？',description:'這會永久刪除目前瀏覽器中的投資與退休規劃資料。',details:['包含交易、退休規劃、設定與市場快取。', '此操作無法復原，建議先匯出備份。'],confirmLabel:'永久清除'})){await replaceBrowserData({});settings={id:'default',monthlyExpenseTarget:0,dividendDateBasis:'PAYMENT_DATE',trendTooltipEventLimit:3,lastSuccessfulMarketSyncDate:null,lastMarketSyncAttemptDate:null,marketAutoSyncPausedUntil:null};budgetPlans=[];budgetItems=[];await load();toast('本機個人資料已清除');}});
+}
+function filePicker(accept, cb) { const input=document.createElement('input'); input.type='file'; input.accept=accept; input.onchange=()=>input.files[0]&&cb(input.files[0]); input.click(); }
+async function copyAiImportPrompt() {
+  const prompt=aiImportPrompt();
+  try { await navigator.clipboard.writeText(prompt); }
+  catch { const input=document.querySelector('#aiImportPrompt'); input?.select(); document.execCommand('copy'); input?.setSelectionRange(0,0); }
+  toast('AI 整理指令已複製');
+}
+async function importCsv(file) {
+  try {
+    const result=planCsvTransactionImport(await file.text(),transactions,uid);
+    if(result.duplicateFile){alert('這份 CSV 已經匯入過，為避免持股重複，本次沒有再次匯入。');return;}
+    const warnings=[...result.errors];
+    if(result.duplicateRows.length)warnings.push(`第 ${result.duplicateRows.join('、')} 列與既有或同檔交易完全相同`);
+    if(warnings.length && !confirm(`發現 ${warnings.length} 項需要確認：\n${warnings.slice(0,5).join('\n')}\n\n仍要匯入 ${result.records.length} 筆有效資料嗎？`)) return;
+    if(!result.records.length){alert(warnings.join('\n')||'CSV 沒有可匯入的交易');return;}
+    await transactionRepository.saveMany(result.records); await load(); toast(`已匯入 ${result.records.length} 筆交易${result.errors.length?`，略過 ${result.errors.length} 筆錯誤`:''}`);
+  } catch (error) { alert(`無法匯入 CSV：${error.message}`); }
+}
+function openTransactionModal(id = null) { transactionEditId = typeof id==='string' ? id : null; transactionModalOpen = true; render(); }
+function closeTransactionModal() { transactionEditId = null; transactionModalOpen = false; render(); }
+function updateTransactionPriceField() {
+  const type = document.querySelector('#transactionType')?.value;
+  const price = document.querySelector('#transactionPrice');
+  const hint = document.querySelector('#transactionFormHint');
+  if (!price || !hint) return;
+  const isStockDividend = type === 'STOCK_DIVIDEND';
+  price.required = !isStockDividend;
+  price.disabled = isStockDividend;
+  if (isStockDividend) { price.value = ''; price.placeholder = '配股不需填寫'; hint.textContent = '配股的成本會以 0 元計算，手續費也不會納入。'; }
+  else { price.placeholder = '例如：20.50'; hint.textContent = '成本會以「股數 × 成交價 ＋ 手續費」計算。'; }
+}
+function transactionFormError(message,inputId){const error=document.querySelector('#transactionFormError');if(error){error.hidden=false;error.textContent=message;error.focus();}if(inputId)document.querySelector(`#${inputId}`)?.setAttribute('aria-invalid','true');}
+async function saveManualTransaction(event) {
+  event.preventDefault();
+  const data = new FormData(event.currentTarget);
+  const date = String(data.get('date') || '');
+  const symbol = String(data.get('symbol') || '').trim();
+  const acquisitionType = String(data.get('acquisitionType') || '');
+  const quantity = Number(data.get('quantity'));
+  const price = acquisitionType === 'STOCK_DIVIDEND' ? null : Number(data.get('price'));
+  const fee = Number(data.get('fee'));
+  const error = !isIsoCalendarDate(date) ? ['請填寫有效的交易日期。','transactionDate'] : !/^[A-Za-z0-9._-]{1,12}$/.test(symbol) ? ['股票代號只能包含英數字、句點、底線或連字號。','transactionSymbol'] : !ACQUISITIONS[acquisitionType] ? ['請選擇有效的取得方式。','transactionType'] : !(Number.isFinite(quantity) && quantity > 0) ? ['股數必須是大於 0 的有限數字。','transactionQuantity'] : acquisitionType !== 'STOCK_DIVIDEND' && !(Number.isFinite(price) && price > 0) ? ['成交價必須是大於 0 的有限數字。','transactionPrice'] : !(Number.isFinite(fee) && fee >= 0) ? ['手續費不得小於 0。','transactionFee'] : null;
+  if (error) return transactionFormError(...error);
+  const existing=transactions.find(row=>row.id===transactionEditId),record={ id:existing?.id||uid(), date, symbol, quantity, price, fee, acquisitionType, importBatchId:existing?.importBatchId??null, importFileFingerprint:existing?.importFileFingerprint??null, sourceRowNumber:existing?.sourceRowNumber??null, createdAt:existing?.createdAt||new Date().toISOString() };
+  await transactionRepository.save(record);
+  transactionEditId = null;
+  transactionModalOpen = false;
+  await load();
+  toast(`${existing?'已更新':'已新增'} ${symbol} 的交易紀錄`);
+}
+function download(content,name,type) { const a=document.createElement('a'); a.href=URL.createObjectURL(new Blob([content],{type})); a.download=name; a.click(); URL.revokeObjectURL(a.href); }
+function backupSettings() { const { id, dividendDateBasis } = settings; return { id, dividendDateBasis, trendTooltipEventLimit:trendTooltipEventLimit(), showTotalAsset: settings.showTotalAsset ?? true, showTotalReturn: settings.showTotalReturn ?? true, gainMilestoneInterval: gainMilestoneInterval(), ...normaliseTrendEventMarkerSettings(settings) }; }
+function backupTransaction(transaction) { const { id, date, acquisitionType, symbol, quantity, price, fee, importFileFingerprint = null } = transaction; return { id, date, acquisitionType, symbol, quantity, price, fee, importFileFingerprint }; }
+async function backup(){const orderedItems=normalisedBudgetItems();download(JSON.stringify({schemaVersion:BACKUP_SCHEMA_VERSION,exportedAt:new Date().toISOString(),appVersion:APP_VERSION,transactions:transactions.map(backupTransaction),settings:backupSettings(),budgetPlans,budgetItems:orderedItems},null,2),`stock-portfolio-backup-${today()}.json`,'application/json');toast('備份檔已下載');}
+async function restore(file) {
+  try {
+    const data=validateBackupPayload(JSON.parse(await file.text()),BACKUP_SCHEMA_VERSION,Object.keys(ACQUISITIONS));
+    if(!await confirmDestructive({title:'以備份覆蓋目前資料？',description:'目前瀏覽器中的資料會先被清除，再還原備份內容。',details:[`備份含 ${data.transactions.length} 筆交易紀錄。`,'建議先匯出目前資料，以免遺失。'],confirmLabel:'覆蓋並還原'})) return;
+    const restoredSettings={id:'default',monthlyExpenseTarget:0,dividendDateBasis:data.settings.dividendDateBasis||'PAYMENT_DATE',trendTooltipEventLimit:normaliseTrendTooltipEventLimit(data.settings.trendTooltipEventLimit),showTotalAsset:data.settings.showTotalAsset ?? true,showTotalReturn:data.settings.showTotalReturn ?? true,gainMilestoneInterval:normaliseGainMilestoneInterval(data.settings.gainMilestoneInterval),...normaliseTrendEventMarkerSettings(data.settings),lastSuccessfulMarketSyncDate:null,lastMarketSyncAttemptDate:null,marketAutoSyncPausedUntil:null};
+    await replaceBrowserData({transactions:data.transactions.map(backupTransaction),settings:[restoredSettings],marketCache:[],budgetPlans:data.budgetPlans,budgetItems:data.budgetItems});
+    settings=restoredSettings;
+    await load();toast('已還原備份；請重新同步市場資料');
+  } catch(e) { alert(`無法還原備份：${e.message}`); }
+}
+document.addEventListener('visibilitychange',()=>{if(!document.hidden){void maybeAutoSyncMarket();scheduleMarketSyncCheck();}});
+window.addEventListener('online',()=>{marketCalendarRetryAfter=null;void maybeAutoSyncMarket();scheduleMarketSyncCheck();});
+window.addEventListener('hashchange',syncPageFromHash);
+load();
