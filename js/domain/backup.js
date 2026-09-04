@@ -55,6 +55,8 @@ export function validateBackupPayload(data, expectedSchemaVersion, acquisitionTy
   if (data.settings.retirementTargetAge != null && !Number.isInteger(Number(data.settings.retirementTargetAge))) throw Error('設定中的退休年齡必須是整數');
   if (data.settings.retirementLifeExpectancy != null && !Number.isInteger(Number(data.settings.retirementLifeExpectancy))) throw Error('設定中的預估壽命必須是整數');
   if (data.settings.retirementBirthMonth != null && !backupYearMonth(data.settings.retirementBirthMonth)) throw Error('設定中的出生年月格式錯誤');
+  if (data.settings.retirementBirthMonthConfirmed != null && typeof data.settings.retirementBirthMonthConfirmed !== 'boolean') throw Error('設定中的出生年月確認狀態錯誤');
+  if (data.settings.retirementBirthMonthConfirmed === true && !backupYearMonth(data.settings.retirementBirthMonth)) throw Error('已確認的出生年月格式錯誤');
   if (data.settings.retirementLifeExpectancy != null && data.settings.retirementTargetAge != null && Number(data.settings.retirementLifeExpectancy)<=Number(data.settings.retirementTargetAge)) throw Error('設定中的預估壽命必須大於退休年齡');
   data.budgetPlans.forEach((plan, index) => {
     const prefix = `退休計畫第 ${index + 1} 筆`;

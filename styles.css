@@ -409,6 +409,92 @@ header { display: flex; justify-content: space-between; align-items: flex-end; g
 .blue-goal-card.is-reached .blue-goal-gap > strong { color: var(--success); }
 .goal-status { display: inline-flex; align-items: center; gap: 6px; color: var(--success) !important; font-weight: 800; }
 .goal-status::before { display: inline-grid; place-items: center; width: 16px; height: 16px; color: #fff; background: var(--success); border-radius: 50%; content: "✓"; font-size: .65rem; }
+.overview-birth-card {
+  display: grid;
+  grid-template-columns: 44px minmax(220px, 1fr) minmax(350px, .9fr);
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 12px;
+  padding: 20px 22px;
+  background: linear-gradient(135deg, #fff 0%, #f8fbff 100%);
+  border: 1px solid #bed4f5;
+  border-radius: 14px;
+  box-shadow: 0 7px 24px rgba(37, 99, 235, .08);
+}
+.overview-birth-icon { display: grid; place-items: center; width: 44px; height: 44px; color: var(--blue); background: var(--blue-soft); border: 1px solid #bfdbfe; border-radius: 12px; }
+.overview-birth-icon svg { width: 23px; height: 23px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.overview-birth-copy h2 { margin-bottom: 4px; font-size: 1.02rem; }
+.overview-birth-copy p:last-child { margin: 0; color: var(--muted); font-size: .74rem; }
+.overview-birth-form { display: grid; gap: 5px; }
+.overview-birth-form > label { color: #40536e; font-size: .7rem; font-weight: 750; }
+.overview-birth-form > div { display: grid; grid-template-columns: minmax(150px, 268px); }
+.overview-birth-form input { width: 100%; min-width: 0; min-height: 40px; padding: 8px 10px; color: var(--ink); background: #fff; border: 1px solid #c9d8ec; border-radius: 9px; }
+.birth-month-input {
+  min-height: 40px;
+  padding: 8px 10px;
+  border-radius: 9px;
+  font-family: inherit;
+  font-size: .72rem;
+  font-weight: 700;
+  line-height: 1.2;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0;
+}
+.birth-month-input::-webkit-datetime-edit {
+  padding: 0;
+  color: var(--ink);
+  font: inherit;
+}
+.birth-month-input::-webkit-datetime-edit-fields-wrapper { padding: 0; }
+.birth-month-input::-webkit-calendar-picker-indicator {
+  width: 14px;
+  height: 14px;
+  margin-left: 8px;
+  opacity: .72;
+  cursor: pointer;
+}
+.overview-birth-form input[aria-invalid="true"] { border-color: var(--red); box-shadow: 0 0 0 3px #c6282814; }
+.overview-birth-form small { color: var(--muted); font-size: .63rem; line-height: 1.4; }
+.overview-birth-form .field-error:not(:empty) { color: var(--red); }
+.overview-retirement-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1.25fr) minmax(330px, .75fr);
+  margin-bottom: 12px;
+  overflow: hidden;
+  background: linear-gradient(135deg, #fff 0%, #f8fbff 100%);
+  border: 1px solid #bed4f5;
+  border-radius: 14px;
+  box-shadow: 0 9px 28px rgba(37, 99, 235, .09);
+}
+.overview-retirement-main { min-width: 0; padding: 22px 24px; }
+.overview-retirement-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; }
+.overview-retirement-heading h2 { margin-bottom: 5px; font-size: 1.08rem; }
+.overview-retirement-heading p:last-child, .overview-retirement-copy { margin: 0; color: var(--muted); font-size: .74rem; }
+.overview-retirement-status { display: inline-flex; align-items: center; gap: 6px; flex: 0 0 auto; padding: 5px 9px; color: #166534; background: #ecfdf5; border: 1px solid #bbf7d0; border-radius: 999px; font-size: .68rem; font-weight: 800; white-space: nowrap; }
+.overview-retirement-status::before { width: 6px; height: 6px; background: #16a34a; border-radius: 50%; content: ""; }
+.overview-retirement-card.is-behind { border-color: #fed7aa; }
+.overview-retirement-card.is-behind .overview-retirement-status { color: #9a3412; background: #fff7ed; border-color: #fed7aa; }
+.overview-retirement-card.is-behind .overview-retirement-status::before { background: #ea580c; }
+.overview-retirement-card.is-behind .overview-retirement-answer strong { color: #c2410c; }
+.overview-retirement-answer { display: flex; align-items: baseline; gap: 13px; margin: 24px 0 7px; }
+.overview-retirement-answer strong { color: var(--blue-strong); font-size: clamp(2.35rem, 4.5vw, 3.5rem); line-height: .95; letter-spacing: -.065em; }
+.overview-retirement-answer span { color: #334155; font-size: .86rem; font-weight: 750; }
+.overview-retirement-timeline { position: relative; height: 54px; margin: 23px 0 8px; }
+.overview-retirement-timeline::before { position: absolute; top: 23px; right: 0; left: 0; height: 7px; background: #dfe9f7; border-radius: 99px; content: ""; }
+.overview-retirement-marker-label { position: absolute; top: 0; color: var(--blue-strong); font-size: .64rem; line-height: 1.3; transform: translateX(-50%); white-space: nowrap; }
+.overview-retirement-timeline.is-now .overview-retirement-marker-label { transform: none; }
+.overview-retirement-timeline-fill { position: absolute; top: 23px; left: 0; height: 7px; background: linear-gradient(90deg, #60a5fa, var(--blue)); border-radius: 99px; }
+.overview-retirement-timeline-dot { position: absolute; top: 17px; width: 19px; height: 19px; background: var(--blue); border: 4px solid #fff; border-radius: 50%; box-shadow: 0 0 0 2px #93c5fd; transform: translateX(-50%); }
+.overview-retirement-timeline-labels { position: absolute; top: 39px; right: 0; left: 0; display: flex; justify-content: space-between; color: var(--muted); font-size: .64rem; }
+.overview-retirement-adjustment { margin: 18px 0 0; padding: 11px 13px; color: #9a3412; background: #fff7ed; border: 1px solid #fed7aa; border-radius: 9px; font-size: .72rem; }
+.overview-retirement-side { display: grid; align-content: center; gap: 15px; padding: 22px 24px; background: rgba(239, 246, 255, .7); border-left: 1px solid #cfe0f7; }
+.overview-retirement-facts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.overview-retirement-facts article { min-width: 0; padding: 11px 12px; background: rgba(255, 255, 255, .82); border: 1px solid #dce8f8; border-radius: 10px; }
+.overview-retirement-facts span, .overview-retirement-facts small { display: block; color: var(--muted); font-size: .64rem; }
+.overview-retirement-facts strong { display: block; margin: 5px 0 2px; overflow-wrap: anywhere; font-size: .94rem; letter-spacing: -.02em; }
+.overview-retirement-actions { display: flex; gap: 8px; }
+.overview-retirement-actions .primary { flex: 1; }
+.overview-retirement-assumptions { margin: 0; color: #60728d; font-size: .64rem; line-height: 1.45; }
 .blue-kpis { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-bottom: 12px; }
 .blue-kpis article { min-width: 0; padding: 15px 16px; }
 .blue-kpis span, .blue-kpis small { display: block; color: var(--muted); font-size: .7rem; }
@@ -974,6 +1060,7 @@ td small { display: block; margin-top: 2px; color: var(--subtle); font-size: .61
 .projection-form-grid label { min-width: 0; color: #40536e; font-size: .73rem; font-weight: 700; }
 .projection-form-grid label.wide { grid-column: 1 / -1; }
 .projection-form-grid input { width: 100%; min-height: 42px; margin-top: 6px; padding: 8px 10px; color: var(--ink); background: #fbfdff; border: 1px solid #cfdced; border-radius: 8px; }
+.projection-form-grid .birth-month-input { width: min(268px, 100%); min-height: 40px; background: #fff; border-color: #c9d8ec; border-radius: 9px; font-size: .72rem; }
 .number-stepper { display: grid; grid-template-columns: 42px minmax(0,1fr) 42px; align-items: stretch; gap: 6px; min-width: 0; }
 .number-stepper input { grid-column: 2; grid-row: 1; min-width: 0; width: 100%; margin: 0 !important; border-radius: 9px !important; appearance: textfield; -moz-appearance: textfield; font-variant-numeric: tabular-nums; text-align: center; }
 .number-stepper input::-webkit-inner-spin-button, .number-stepper input::-webkit-outer-spin-button { margin: 0; appearance: none; -webkit-appearance: none; }
@@ -1072,6 +1159,10 @@ td small { display: block; margin-top: 2px; color: var(--subtle); font-size: .61
 @media (max-width: 1120px) {
   .metrics { grid-template-columns: repeat(3, 1fr); }
   .blue-goal-card { grid-template-columns: minmax(0,1fr) 230px; }
+  .overview-birth-card { grid-template-columns: 44px minmax(0, 1fr); }
+  .overview-birth-form { grid-column: 2; }
+  .overview-retirement-card { grid-template-columns: 1fr; }
+  .overview-retirement-side { border-top: 1px solid #cfe0f7; border-left: 0; }
   .budget-summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .budget-form-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .projection-layout { grid-template-columns: 310px minmax(0,1fr); }
@@ -1126,6 +1217,7 @@ td small { display: block; margin-top: 2px; color: var(--subtle); font-size: .61
   .notice { display: block; }
   .notice button { min-height: 40px; margin: 6px 0 0; padding: 0; }
   .blue-goal-card { grid-template-columns: 1fr; gap: 18px; padding: 20px; }
+  .overview-retirement-main, .overview-retirement-side { padding: 20px; }
   .journey-card { padding: 16px; }
   .journey-header { flex-direction: column; align-items: stretch; gap: 12px; }
   .journey-progress-wrap { align-items: stretch; min-width: 0; }
@@ -1233,6 +1325,20 @@ td small { display: block; margin-top: 2px; color: var(--subtle); font-size: .61
   .mobile-nav-panel nav button { gap: 9px; }
   .metrics { grid-template-columns: 1fr 1fr; gap: 8px; }
   .dividend-metrics { grid-template-columns: 1fr; }
+  .overview-birth-card { grid-template-columns: 1fr; padding: 18px; }
+  .overview-birth-icon { width: 40px; height: 40px; }
+  .overview-birth-form { grid-column: auto; }
+  .overview-birth-form > div { grid-template-columns: 1fr; }
+  .projection-form-grid .birth-month-input { width: 100%; }
+  .overview-birth-form input, .overview-birth-form button { min-height: 44px; }
+  .overview-retirement-heading { display: grid; gap: 10px; }
+  .overview-retirement-status { justify-self: start; }
+  .overview-retirement-answer { align-items: flex-end; flex-wrap: wrap; margin-top: 20px; }
+  .overview-retirement-timeline { height: 54px; }
+  .overview-retirement-timeline-labels { font-size: .6rem; }
+  .overview-retirement-facts { grid-template-columns: 1fr; }
+  .overview-retirement-actions { display: grid; }
+  .overview-retirement-actions button { width: 100%; min-height: 44px; }
   .trend-navigator-wrap { display: block; margin: 12px 22px 0; padding-top: 12px; }
   .trend-navigator { height: 48px; }
   .navigator-handle { width: 44px; height: 48px; }
@@ -1285,6 +1391,7 @@ td small { display: block; margin-top: 2px; color: var(--subtle); font-size: .61
   .projection-form-grid { grid-template-columns: 1fr; }
   .projection-form-grid label.wide { grid-column: auto; }
   .projection-form-grid input { min-height: 44px; }
+  .projection-form-grid .birth-month-input { min-height: 44px; }
   .number-stepper { grid-template-columns: 44px minmax(0,1fr) 44px; }
   .number-stepper-button { min-height: 44px; }
   .projection-hero { grid-template-columns: 1fr; }

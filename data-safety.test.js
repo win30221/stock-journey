@@ -30,6 +30,8 @@ test('backup validation rejects malformed or duplicate records before restore', 
   assert.throws(() => validateBackupPayload({...valid,settings:{id:'default',retirementCurrentAge:60,retirementTargetAge:55}},3,['MANUAL_BUY']), /退休年齡必須大於/);
   assert.throws(() => validateBackupPayload({...valid,settings:{id:'default',retirementInflationRate:99}},3,['MANUAL_BUY']), /通膨率/);
   assert.throws(() => validateBackupPayload({...valid,settings:{id:'default',retirementBirthMonth:'1990-99'}},3,['MANUAL_BUY']), /出生年月/);
+  assert.throws(() => validateBackupPayload({...valid,settings:{id:'default',retirementBirthMonth:'1990-01',retirementBirthMonthConfirmed:'yes'}},3,['MANUAL_BUY']), /確認狀態/);
+  assert.throws(() => validateBackupPayload({...valid,settings:{id:'default',retirementBirthMonthConfirmed:true}},3,['MANUAL_BUY']), /已確認的出生年月/);
   assert.throws(() => validateBackupPayload({...valid,settings:{id:'default',retirementTargetAge:70,retirementLifeExpectancy:65}},3,['MANUAL_BUY']), /預估壽命必須大於/);
   assert.throws(() => validateBackupPayload({...valid,settings:{id:'default',retirementTargetAge:60.5}},3,['MANUAL_BUY']), /退休年齡必須是整數/);
   assert.throws(() => validateBackupPayload({...valid,budgetItems:[{...valid.budgetItems[0],amountBaseMonth:'2026-13'}]},3,['MANUAL_BUY']), /金額基準月/);

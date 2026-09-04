@@ -350,6 +350,46 @@ test('overview renders comprehensive journey progress card with dual task steps'
   assert.match(sandbox.result[2], /class="primary" data-onboarding-action="transactions"/);
 });
 
+test('overview adds a retirement projection summary without removing the detailed calculator', () => {
+  const source = fs.readFileSync('app.js', 'utf8');
+  const styles = fs.readFileSync('styles.css', 'utf8');
+
+  assert.match(source, /function overviewRetirementSnapshot\(\)/);
+  assert.match(source, /calculateRetirementProjection\(projectionInput\(\)\)/);
+  assert.match(source, /retirementSnapshot=onboarding\.isComplete\?overviewRetirementSnapshot\(\):''/);
+  assert.match(source, /class="overview-retirement-card/);
+  assert.match(source, /const actionLabel=isRetiredNow\?'查看完整退休試算 →':'調整試算條件 →';/);
+  assert.match(source, /const title=isRetiredNow\?'現在已具備退休條件'/);
+  assert.match(source, /class="overview-retirement-marker-label"[^>]*>退休<\/b>/);
+  assert.match(source, /function retirementCalculatorPage\(\)/, 'the complete calculator page should remain available');
+  assert.match(source, /id="retirementProjectionForm"/, 'the detailed calculator inputs should not be removed');
+  assert.match(source, /id="projectionRetirementChart"/, 'the detailed projection chart should not be removed');
+  assert.match(styles, /\.overview-retirement-card\s*\{/);
+  assert.match(styles, /\.overview-retirement-marker-label\s*\{[^}]*top:\s*0/);
+  assert.match(styles, /@media \(max-width: 1120px\)[\s\S]*?\.overview-retirement-card\s*\{[^}]*grid-template-columns:\s*1fr/);
+  assert.match(styles, /@media \(max-width: 520px\)[\s\S]*?\.overview-retirement-facts\s*\{[^}]*grid-template-columns:\s*1fr/);
+});
+
+test('retirement results require an explicitly confirmed birth month at the moment of value', () => {
+  const source = fs.readFileSync('app.js', 'utf8');
+  const styles = fs.readFileSync('styles.css', 'utf8');
+
+  assert.match(source, /retirementBirthMonthConfirmed:\s*false/);
+  assert.match(source, /function retirementBirthMonthIsConfirmed\(\)/);
+  assert.match(source, /function overviewBirthMonthPrompt\(\)/);
+  assert.match(source, /id="overviewBirthMonthForm"/);
+  assert.match(source, /id="overviewBirthMonth" class="birth-month-input"/);
+  assert.match(source, /選擇出生年月後會自動開始試算；資料只留在這台裝置/);
+  assert.match(source, /id="overviewBirthSaveStatus" role="status">選擇後會自動開始試算/);
+  assert.match(source, /form\.addEventListener\('input',\(\)=>void update\(\)\)/);
+  assert.doesNotMatch(source, /儲存並查看試算/);
+  assert.match(source, /retirementBirthMonthConfirmed:true/);
+  assert.match(source, /birthMonthConfirmed\?retirementProjectionResult\(projection\):retirementBirthMonthRequiredResult\(\)/);
+  assert.match(source, /value="\$\{birthMonthConfirmed\?projection\.birthMonth:''\}"/);
+  assert.match(styles, /\.overview-birth-card\s*\{/);
+  assert.match(styles, /\.overview-birth-form input\[aria-invalid="true"\]/);
+});
+
 test('budget and transaction pages render contextual step banners during onboarding', () => {
   const source = fs.readFileSync('app.js', 'utf8');
   const styles = fs.readFileSync('styles.css', 'utf8');
@@ -426,10 +466,11 @@ test('retirement calculator connects portfolio, budget, projection assumptions a
   assert.match(source, /function retirementCalculatorPage\(/);
   assert.match(source, /currentAssets:m\.market/);
   assert.match(source, /currentMonthlyExpense:currentMonthlyTarget\(\)/);
-  assert.match(source, /function inferredMonthlyContribution\(/);
+  assert.match(source, /function projectionMonthlyContribution\(\) \{ return normaliseProjectionSetting\(settings\.retirementMonthlyContribution,0,0,10000000\); \}/);
+  assert.doesNotMatch(source, /改用近 12 個月平均/);
   assert.match(source, /id="retirementProjectionForm"/);
   assert.match(source, /id="projectionRetirementChart"[^>]*tabindex="0"/);
-  assert.match(source, /name="birthMonth" type="month"/);
+  assert.match(source, /class="birth-month-input" name="birthMonth" type="month" min="1900-01" max="\$\{currentYearMonth\(\)\}"/);
   assert.doesNotMatch(source, /name="lifeExpectancy"/);
   assert.doesNotMatch(source, /name="targetAge"/);
   assert.match(source, /autoRetirementAge:true/);
