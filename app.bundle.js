@@ -1896,14 +1896,54 @@ function addNumberSteppers(scope=document) {
     increase.type='button';increase.className='number-stepper-button';increase.dataset.numberStepDirection='1';increase.setAttribute('aria-label',`增加${label}`);increase.textContent='＋';
     // Keep the input first so its surrounding <label> focuses the field, not the decrease button.
     wrapper.append(input,decrease,increase);
-    wrapper.addEventListener('click',event=>{
-      const button=event.target.closest('[data-number-step-direction]');
-      if (!button || input.disabled) return;
+    let repeatDelayTimer,repeatTimer,ignorePointerClickUntil=0;
+    const changeValue=button=>{
+      if (input.disabled) return false;
       const step=numberStepperStep(input),min=input.min==='' ? -Number.MAX_SAFE_INTEGER : Number(input.min),max=input.max==='' ? Number.MAX_SAFE_INTEGER : Number(input.max),current=Number.isFinite(input.valueAsNumber) ? input.valueAsNumber : 0;
       const next=Math.max(min,Math.min(max,current+step*Number(button.dataset.numberStepDirection)));
+      if (next===current) return false;
       input.value=String(Math.round(next*1000000)/1000000);
       input.dispatchEvent(new Event('input',{bubbles:true}));
       input.dispatchEvent(new Event('change',{bubbles:true}));
+      return true;
+    };
+    const stopRepeating=button=>{
+      clearTimeout(repeatDelayTimer);clearInterval(repeatTimer);
+      delete button.dataset.repeating;
+    };
+    wrapper.addEventListener('pointerdown',event=>{
+      const button=event.target.closest('[data-number-step-direction]');
+      if (!button || input.disabled || event.button!==0) return;
+      event.preventDefault();button.focus();ignorePointerClickUntil=Date.now()+500;
+      if (!changeValue(button)) return;
+      button.dataset.repeating='true';
+      button.setPointerCapture?.(event.pointerId);
+      repeatDelayTimer=setTimeout(()=>{
+        repeatTimer=setInterval(()=>{if(!changeValue(button))stopRepeating(button);},75);
+      },350);
+    });
+    wrapper.addEventListener('pointerup',event=>{
+      const button=event.target.closest('[data-number-step-direction]');
+      if (button) stopRepeating(button);
+    });
+    wrapper.addEventListener('pointercancel',event=>{
+      const button=event.target.closest('[data-number-step-direction]');
+      if (button) stopRepeating(button);
+    });
+    wrapper.addEventListener('pointermove',event=>{
+      const button=event.target.closest('[data-number-step-direction]');
+      if (!button?.dataset.repeating) return;
+      const rect=button.getBoundingClientRect();
+      if (event.clientX<rect.left || event.clientX>rect.right || event.clientY<rect.top || event.clientY>rect.bottom) stopRepeating(button);
+    });
+    wrapper.addEventListener('lostpointercapture',event=>{
+      const button=event.target.closest('[data-number-step-direction]');
+      if (button) stopRepeating(button);
+    });
+    wrapper.addEventListener('click',event=>{
+      const button=event.target.closest('[data-number-step-direction]');
+      if (!button || input.disabled || Date.now()<ignorePointerClickUntil) return;
+      changeValue(button);
     });
   });
 }

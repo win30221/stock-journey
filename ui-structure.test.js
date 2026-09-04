@@ -444,6 +444,11 @@ test('retirement calculator connects portfolio, budget, projection assumptions a
   assert.match(source, /function addNumberSteppers/);
   assert.match(source, /data-number-step-direction/);
   assert.match(source, /wrapper\.append\(input,decrease,increase\)/);
+  assert.match(source, /wrapper\.addEventListener\('pointerdown'/);
+  assert.match(source, /wrapper\.addEventListener\('pointerup'/);
+  assert.match(source, /wrapper\.addEventListener\('pointermove'/);
+  assert.match(source, /setTimeout\(\(\)=>\{/);
+  assert.match(source, /setInterval\(\(\)=>\{/);
   assert.match(source, /預期年化總報酬率/);
   assert.match(source, /正在自動儲存/);
   assert.doesNotMatch(source, /儲存試算設定/);
@@ -454,6 +459,7 @@ test('retirement calculator connects portfolio, budget, projection assumptions a
   assert.match(styles, /\.projection-form-grid input\[aria-invalid="true"\]/);
   assert.match(styles, /\.number-stepper\s*\{/);
   assert.match(styles, /\.number-stepper input\s*\{[^}]*text-align:\s*center/);
+  assert.match(styles, /\.number-stepper-button:active/);
   assert.match(styles, /\.projection-retirement-line\s*\{/);
   assert.match(source, /projection-retirement-label/);
   assert.match(source, />可退休</);
