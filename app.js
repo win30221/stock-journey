@@ -16,7 +16,7 @@ import { hashForPage, pageFromHash } from './js/app/router.js';
 
 let transactions = [], marketCaches = [], budgetPlans = [], budgetItems = [], syncProgress = '', settings = { id: 'default', monthlyExpenseTarget: 0, dividendDateBasis: 'PAYMENT_DATE', retirementBirthMonth: null, retirementBirthMonthConfirmed: false, retirementCurrentAge: 40, retirementTargetAge: 60, retirementLifeExpectancy: 90, retirementOtherMonthlyIncome: 0, retirementMonthlyContribution: 0, retirementAnnualReturnRate: 6, retirementInflationRate: 2, retirementWithdrawalRate: 0, retirementSaleWithdrawalRateVersion: 1, trendTooltipEventLimit: 3, showTotalAsset: true, showTotalReturn: true, gainMilestoneInterval: 1000000, showNewStockMarker: true, showManualBuyMarker: true, showRecurringInvestmentMarker: true, showDividendReinvestmentMarker: true, showStockDividendMarker: true, lastSuccessfulMarketSyncDate: null, lastMarketSyncAttemptDate: null, marketAutoSyncPausedUntil: null }, page = pageFromHash(globalThis.location?.hash), transactionModalOpen = false, dividendYear = null, marketSymbol = null, marketPriceMonth = null, autoSyncInProgress = false, marketSyncInProgress = false, marketSyncTimer = null, marketTradingDates = [], marketCalendarLoaded = false, marketCalendarRetryAfter = null;
 let trendState = { frequency: 'month', range: 'all', start: null, end: null }, trendDetailDate = null;
-let budgetEditId = null, budgetEditorOpen = false, budgetDraft = null, budgetUndoItem = null, budgetUndoTimer = null, transactionEditId = null, transactionUndoRows = [], transactionUndoTimer = null, aiImportGuideOpen = false;
+let budgetEditId = null, budgetEditorOpen = false, budgetDraft = null, budgetReorderMode = false, budgetUndoItem = null, budgetUndoTimer = null, transactionEditId = null, transactionUndoRows = [], transactionUndoTimer = null, aiImportGuideOpen = false;
 let onboardingCompletionNoticeVisible = false;
 const STOCK_CATALOG_CACHE_KEY = 'stock-journey-stock-catalog-v1';
 const STOCK_CATALOG_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
@@ -81,6 +81,10 @@ function renderPageAtTop() {
 }
 function navigateToPage(nextPage) {
   onboardingCompletionNoticeVisible = false;
+  transactionEditId = null;
+  transactionModalOpen = false;
+  aiImportGuideOpen = false;
+  budgetReorderMode = false;
   const nextHash = hashForPage(nextPage);
   page = pageFromHash(nextHash);
   if (globalThis.location?.hash !== nextHash) globalThis.location.hash = nextHash;
@@ -97,12 +101,16 @@ function syncPageFromHash() {
   }
   if (page === nextPage) return;
   onboardingCompletionNoticeVisible = false;
+  transactionEditId = null;
+  transactionModalOpen = false;
+  aiImportGuideOpen = false;
+  budgetReorderMode = false;
   page = nextPage;
   renderPageAtTop();
 }
 const PAGE_LABELS = {
   overview: '投資總覽',
-  budget: '退休規劃',
+  budget: '退休生活預算',
   transactions: '持股與交易',
   'retirement-calculator': '退休試算',
   dividends: '股息現金流',
@@ -302,7 +310,7 @@ function currentYearMonth() { return today().slice(0,7); }
 function currentAnnualBudget(item) { return calculateBudgetSummaryAt({selectedTarget:'NEEDS_AND_WANTS',bufferRateBps:0},[{...item,isActive:true}],{inflationRate:Number(settings.retirementInflationRate)/100,asOfMonth:currentYearMonth(),fallbackBaseMonth:currentYearMonth()}).targetAnnual; }
 function budgetSummary(asOfMonth = currentYearMonth()) { return calculateBudgetSummaryAt(budgetPlan(), budgetItems, { inflationRate:Number(settings.retirementInflationRate)/100, asOfMonth, fallbackBaseMonth:currentYearMonth() }); }
 function currentMonthlyTarget() { return budgetSummary().targetMonthly; }
-function currentTargetLabel() { return '退休規劃明細'; }
+function currentTargetLabel() { return '退休生活預算明細'; }
 function normaliseProjectionSetting(value, fallback, minimum, maximum) { const number=Number(value);return Number.isFinite(number)?Math.max(minimum,Math.min(maximum,number)):fallback; }
 function projectionMonthlyContribution() { return normaliseProjectionSetting(settings.retirementMonthlyContribution,0,0,10000000); }
 function budgetFrequencyOptions(selected) { return Object.entries(BUDGET_FREQUENCIES).map(([key,label]) => `<option value="${key}" ${key===selected?'selected':''}>${label}</option>`).join(''); }
@@ -320,7 +328,13 @@ function budgetItemCard(item, index, total) {
   const annual=currentAnnualBudget(item), monthly=annual/12, bucket=item.bucket==='NEED'?'基本需要':'品質想要';
   const cadence=item.calculationMode==='REPLACEMENT' ? `每 ${item.replacementCycleYears} 年汰換` : item.frequency==='EVERY_N_MONTHS' ? `每 ${item.intervalCount} 個月` : item.frequency==='EVERY_N_YEARS' ? `每 ${item.intervalCount} 年` : BUDGET_FREQUENCIES[item.frequency];
   const safeId=escapeHtml(item.id), safeBucket=escapeHtml(item.bucket);
-  return `<article class="budget-item ${item.isActive===false?'is-inactive':''}"><div class="budget-item-copy"><div><span class="budget-bucket ${item.bucket==='NEED'?'need':'want'}">${bucket}</span><span class="budget-category">${BUDGET_CATEGORIES[item.category] || '其他'}</span></div><b>${escapeHtml(item.name)}</b><small>${fmt(item.occurrenceAmount)}／${cadence}${item.note ? ` · ${escapeHtml(item.note)}` : ''}</small><small class="budget-price-basis">${escapeHtml(item.amountBaseMonth || currentYearMonth())} 幣值</small></div><div class="budget-item-values"><span>每月需求</span><strong>${fmt(monthly)}</strong><small>年 ${fmt(annual)}</small></div><div class="budget-item-actions"><button class="icon-order" aria-label="將${escapeHtml(item.name)}上移" title="上移" data-budget-move="up" data-budget-id="${safeId}" data-budget-bucket="${safeBucket}" ${index===0?'disabled':''}>↑</button><button class="icon-order" aria-label="將${escapeHtml(item.name)}下移" title="下移" data-budget-move="down" data-budget-id="${safeId}" data-budget-bucket="${safeBucket}" ${index===total-1?'disabled':''}>↓</button><button class="text-button" data-budget-edit="${safeId}">編輯</button><button class="text-button" data-budget-toggle="${safeId}">${item.isActive===false?'啟用':'停用'}</button><button class="icon-danger" aria-label="刪除${escapeHtml(item.name)}" title="刪除" data-budget-delete="${safeId}">×</button></div></article>`;
+  const itemName=escapeHtml(item.name), toggleLabel=item.isActive===false?'啟用':'停用';
+  return `<article class="budget-item ${item.isActive===false?'is-inactive':''}"><div class="budget-item-copy"><div><span class="budget-bucket ${item.bucket==='NEED'?'need':'want'}">${bucket}</span><span class="budget-category">${BUDGET_CATEGORIES[item.category] || '其他'}</span></div><b>${itemName}</b><small>${fmt(item.occurrenceAmount)}／${cadence}${item.note ? ` · ${escapeHtml(item.note)}` : ''}</small><small class="budget-price-basis">${escapeHtml(item.amountBaseMonth || currentYearMonth())} 幣值</small></div><div class="budget-item-values"><span>每月需求</span><strong>${fmt(monthly)}</strong><small>年 ${fmt(annual)}</small></div><div class="budget-item-actions"><div class="budget-order-controls"><button class="icon-order" aria-label="將${itemName}上移" title="上移" data-budget-move="up" data-budget-id="${safeId}" data-budget-bucket="${safeBucket}" ${index===0?'disabled':''}>↑</button><button class="icon-order" aria-label="將${itemName}下移" title="下移" data-budget-move="down" data-budget-id="${safeId}" data-budget-bucket="${safeBucket}" ${index===total-1?'disabled':''}>↓</button></div><button class="text-button budget-edit-action" data-budget-edit="${safeId}">編輯</button><button class="text-button budget-inline-toggle" data-budget-toggle="${safeId}">${toggleLabel}</button><button class="icon-danger budget-inline-delete" aria-label="刪除${itemName}" title="刪除" data-budget-delete="${safeId}">×</button><details class="budget-item-menu"><summary aria-label="${itemName}更多操作" title="更多操作">⋯</summary><div class="budget-item-menu-popover"><button type="button" data-budget-toggle="${safeId}">${toggleLabel}</button><button type="button" class="danger" data-budget-delete="${safeId}">刪除</button></div></details></div></article>`;
+}
+
+function budgetGoalSettingsPanel(summary=budgetSummary(), plan=budgetPlan()) {
+  const bufferRate=Number(plan?.bufferRateBps||0)/100, selectedIdeal=plan?.selectedTarget!=='NEEDS_ONLY';
+  return `<section class="panel budget-goal-settings" aria-labelledby="budget-goal-settings-title"><div class="panel-title"><div><p class="eyebrow">目標口徑</p><h2 id="budget-goal-settings-title">覆蓋率與安全緩衝</h2><p>決定總覽要比較的生活線，並為漏項與價格波動預留空間。</p></div></div><div class="settings-preference-grid"><label>覆蓋率比較基準<select id="budgetTargetMode"><option value="NEEDS_AND_WANTS" ${selectedIdeal?'selected':''}>理想生活線（需要＋想要）</option><option value="NEEDS_ONLY" ${!selectedIdeal?'selected':''}>最低生活線（只算需要）</option></select><small>目前基本需要 ${fmt(summary.needsAnnual/12)}；${selectedIdeal?'含品質想要與安全緩衝':'不含品質想要'}。</small></label><div class="buffer-setting"><b>安全緩衝率</b><small>為漏項與價格波動預留空間。</small><div class="buffer-controls" role="group" aria-label="安全緩衝率">${[0,5,10,15].map(rate=>`<button type="button" data-buffer-rate="${rate}" class="${bufferRate===rate?'active':''}" aria-pressed="${bufferRate===rate}">${rate}%</button>`).join('')}<label>自訂 <input id="customBufferRate" type="number" min="0" max="50" step="1" inputmode="numeric" value="${bufferRate}" aria-label="自訂安全緩衝率" />%</label></div></div></div></section>`;
 }
 function budgetEditor() {
   const existing=budgetItems.find(item => item.id===budgetEditId);
@@ -361,8 +375,8 @@ function livingBudgetPage() {
   const hasItems=budgetItems.length>0;
   const undo=budgetUndoItem ? `<section class="budget-undo" role="status">已刪除「${escapeHtml(budgetUndoItem.name)}」<button id="undoBudgetDelete">復原</button></section>` : '';
   const listSection=(bucket,title,items)=>{const active=items.filter(item=>item.isActive!==false), monthly=active.reduce((sum,item)=>sum+currentAnnualBudget(item)/12,0), rows=items.map((item,index)=>budgetItemCard(item,index,items.length)).join('') || `<p class="budget-filter-empty">尚未有${title}項目。</p>`;return `<section class="budget-list-section" aria-labelledby="budget-list-${bucket}"><div class="budget-list-section-heading"><div><h3 id="budget-list-${bucket}">${title}</h3><p>${items.length} 項${active.length ? ` · 目前每月 ${fmt(monthly)}` : ''}</p></div><span>${bucket==='NEED'?'必要生活開支':'讓退休生活更有餘裕'}</span></div><div class="budget-items">${rows}</div></section>`;};
-  const list = `<section class="panel budget-list"><div class="panel-title"><div><p class="eyebrow">明細</p><h2>生活支出項目</h2><p>基本需要與品質想要各自排序；可用上下箭頭把相關項目排在一起，順序會保留在本機。</p></div><div class="budget-list-actions"><button class="primary budget-add-button" type="button" id="addBudgetItem" aria-expanded="${budgetEditorOpen}">＋ 新增項目</button></div></div><div class="budget-column-head" aria-hidden="true"><span>層級、分類與項目</span><span>每月需求／年預算</span><span>操作</span></div>${listSection('NEED','基本需要',needs)}${listSection('WANT','品質想要',wants)}</section>`;
-  return `<section class="budget-page">${contextualStepBanner('budget')}<section class="budget-hero"><div><p class="eyebrow">退休規劃</p><h2>我的退休生活預算</h2><p>先從最固定的生活支出開始，再逐步補上保險、醫療與耐用品汰換費用。</p></div></section>${undo}<section class="budget-summary-grid"><article><span>基本需要</span><strong>${fmt(summary.needsAnnual/12)}</strong><small>本月幣值 · 年 ${fmt(summary.needsAnnual)}</small></article><article><span>品質想要</span><strong>${fmt(summary.wantsAnnual/12)}</strong><small>本月幣值 · 年 ${fmt(summary.wantsAnnual)}</small></article><article><span>安全緩衝</span><strong>${plan?.bufferRateBps/100 || 0}%</strong><small>每月 ${fmt(summary.bufferAnnual/12)}</small></article><article class="budget-total"><span>目前月現金流目標</span><strong>${fmt(summary.targetMonthly)}</strong><small>依金額基準月與通膨率換算</small></article></section>${hasItems ? `${list}${budgetEditorOpen ? budgetEditor() : ''}` : `${budgetEmptyState()}${budgetEditorOpen ? budgetEditor() : ''}`}</section>`;
+  const list = `<section class="panel budget-list"><div class="panel-title"><div><p class="eyebrow">明細</p><h2>生活支出項目</h2><p>${budgetReorderMode?'使用上下箭頭調整項目順序；完成後點「完成排序」。':'基本需要與品質想要會分開計算；可新增、編輯或調整項目順序。'}</p></div><div class="budget-list-actions"><button class="secondary budget-reorder-button" type="button" data-budget-reorder aria-pressed="${budgetReorderMode}">${budgetReorderMode?'完成排序':'調整順序'}</button><button class="primary budget-add-button" type="button" id="addBudgetItem" aria-expanded="${budgetEditorOpen}">＋ 新增項目</button></div></div><div class="budget-column-head" aria-hidden="true"><span>層級、分類與項目</span><span>每月需求／年預算</span><span>操作</span></div>${listSection('NEED','基本需要',needs)}${listSection('WANT','品質想要',wants)}</section>`;
+  return `<section class="budget-page ${budgetReorderMode?'is-reordering':''}">${contextualStepBanner('budget')}<section class="budget-hero"><div><p class="eyebrow">退休現金流</p><h2>我的退休生活預算</h2><p>先從最固定的生活支出開始，再逐步補上保險、醫療與耐用品汰換費用。</p></div></section>${undo}<section class="budget-summary-grid"><article><span>基本需要</span><strong>${fmt(summary.needsAnnual/12)}</strong><small>本月幣值 · 年 ${fmt(summary.needsAnnual)}</small></article><article><span>品質想要</span><strong>${fmt(summary.wantsAnnual/12)}</strong><small>本月幣值 · 年 ${fmt(summary.wantsAnnual)}</small></article><article><span>安全緩衝</span><strong>${plan?.bufferRateBps/100 || 0}%</strong><small>每月 ${fmt(summary.bufferAnnual/12)}</small></article><article class="budget-total"><span>目前月現金流目標</span><strong>${fmt(summary.targetMonthly)}</strong><small>依金額基準月與通膨率換算</small></article></section>${budgetGoalSettingsPanel(summary,plan)}${hasItems ? `${list}${budgetEditorOpen ? budgetEditor() : ''}` : `${budgetEmptyState()}${budgetEditorOpen ? budgetEditor() : ''}`}</section>`;
 }
 function navIcon(id) {
   const paths={
@@ -377,8 +391,7 @@ function navIcon(id) {
   return `<svg viewBox="0 0 24 24" aria-hidden="true">${paths[id]||''}</svg>`;
 }
 function settingsPage() {
-  const plan=budgetPlan(), summary=budgetSummary(), bufferRate=Number(plan?.bufferRateBps||0)/100, selectedIdeal=plan?.selectedTarget!=='NEEDS_ONLY';
-  return `<section class="settings-page"><section class="panel setting retirement-goal-settings"><div class="panel-title"><div><p class="eyebrow">退休目標與覆蓋率</p><h2>決定想要的退休生活</h2><p>生活線與安全緩衝會一起計入退休月現金流目標。</p></div><button class="secondary" type="button" data-page="budget">管理退休預算</button></div><div class="setting-target"><span>目前退休月現金流目標</span><strong>${fmt(currentMonthlyTarget())}</strong><small>依退休規劃明細即時計算。</small></div><div class="settings-preference-grid"><label>覆蓋率比較基準<select id="budgetTargetMode"><option value="NEEDS_AND_WANTS" ${selectedIdeal?'selected':''}>理想生活線（需要＋想要）</option><option value="NEEDS_ONLY" ${!selectedIdeal?'selected':''}>最低生活線（只算需要）</option></select><small>目前基本需要 ${fmt(summary.needsAnnual/12)}；${selectedIdeal?'含品質想要與安全緩衝':'不含品質想要'}。</small></label><div class="buffer-setting"><b>安全緩衝率</b><small>為漏項與價格波動預留空間。</small><div class="buffer-controls" role="group" aria-label="安全緩衝率">${[0,5,10,15].map(rate=>`<button type="button" data-buffer-rate="${rate}" class="${bufferRate===rate?'active':''}" aria-pressed="${bufferRate===rate}">${rate}%</button>`).join('')}<label>自訂 <input id="customBufferRate" type="number" min="0" max="50" step="1" inputmode="numeric" value="${!([0,5,10,15].includes(bufferRate)) ? bufferRate : ''}" aria-label="自訂安全緩衝率" />%</label></div></div></div></section><section class="panel setting"><div class="panel-title"><div><p class="eyebrow">股息現金流</p><h2>股息歸屬方式</h2><p>選擇現金流報表採用的月份計算口徑。</p></div></div><label>股息歸屬依據<select id="basis" data-setting-control><option value="PAYMENT_DATE" ${settings.dividendDateBasis==='PAYMENT_DATE'?'selected':''}>依發放日（建議）</option><option value="EX_DIVIDEND_DATE" ${settings.dividendDateBasis==='EX_DIVIDEND_DATE'?'selected':''}>依除息日</option></select><small>會影響股息現金流的月份歸屬。</small></label></section>${chartSettingsPanel()}<section class="two-col settings-two-col"><section class="panel setting"><div class="panel-title"><div><p class="eyebrow">資料備份與維護</p><h2>備份與還原</h2><p>備份包含交易、退休規劃與所有設定。</p></div></div><div class="setting-actions"><button class="secondary" id="backup">匯出 JSON 備份</button><label class="file-label">匯入 JSON 備份<input id="restore" type="file" accept="application/json" /></label></div></section><section class="panel setting"><div class="panel-title"><div><p class="eyebrow">市場資料</p><h2>快取維護</h2><p>清除後不影響交易與退休規劃，可隨時重新同步。</p></div></div><button class="danger subtle setting-action" id="clearMarket">清除市場快取</button></section></section><section class="panel setting-danger-zone settings-danger-card"><div><div><p class="eyebrow">危險區</p><h2>清除全部個人資料</h2><p>這會永久刪除目前瀏覽器內的交易、退休規劃、設定與市場快取。</p></div><button class="danger setting-action" id="clearAll">清除全部個人資料</button></div></section></section>`;
+  return `<section class="settings-page"><section class="panel setting"><div class="panel-title"><div><p class="eyebrow">股息現金流</p><h2>股息歸屬方式</h2><p>選擇現金流報表採用的月份計算口徑。</p></div></div><label>股息歸屬依據<select id="basis" data-setting-control><option value="PAYMENT_DATE" ${settings.dividendDateBasis==='PAYMENT_DATE'?'selected':''}>依發放日（建議）</option><option value="EX_DIVIDEND_DATE" ${settings.dividendDateBasis==='EX_DIVIDEND_DATE'?'selected':''}>依除息日</option></select><small>會影響股息現金流的月份歸屬。</small></label></section>${chartSettingsPanel()}<section class="two-col settings-two-col"><section class="panel setting"><div class="panel-title"><div><p class="eyebrow">資料備份與維護</p><h2>備份與還原</h2><p>備份包含交易、退休生活預算、試算條件與所有設定。</p></div></div><div class="setting-actions"><button class="secondary" id="backup">匯出 JSON 備份</button><label class="file-label">匯入 JSON 備份<input id="restore" type="file" accept="application/json" /></label></div></section><section class="panel setting"><div class="panel-title"><div><p class="eyebrow">市場資料</p><h2>快取維護</h2><p>清除後不影響交易與退休生活預算，可隨時重新同步。</p></div></div><button class="danger subtle setting-action" id="clearMarket">清除市場快取</button></section></section><section class="panel setting-danger-zone settings-danger-card"><div><div><p class="eyebrow">危險區</p><h2>清除全部個人資料</h2><p>這會永久刪除目前瀏覽器內的交易、退休生活預算、試算設定與市場快取。</p></div><button class="danger setting-action" id="clearAll">清除全部個人資料</button></div></section></section>`;
 }
 function navBadge(id, onboarding = getOnboardingState()) {
   if (onboarding.isComplete) return '';
@@ -407,7 +420,7 @@ function render() {
 }
 function header() {
   const marketSummary=marketSyncSummary();
-  const subtitle=page==='budget' ? '從生活支出建立退休月現金流目標。' : page==='retirement-calculator' ? '結合持股、生活預算與投入計畫，推算退休時間。' : page==='transactions' ? '管理交易紀錄，系統會自動計算持股與成本。' : page==='settings' ? '退休目標、顯示方式與資料管理。' : `市場資料：${marketHeaderLabel(marketSummary)}`;
+  const subtitle=page==='budget' ? '從生活支出建立退休月現金流目標。' : page==='retirement-calculator' ? '結合持股、生活預算與投入計畫，推算退休時間。' : page==='transactions' ? '管理交易紀錄，系統會自動計算持股與成本。' : page==='settings' ? '顯示方式與本機資料管理。' : `市場資料：${marketHeaderLabel(marketSummary)}`;
   const action='';
   return `<header><div><p class="eyebrow">存股退休</p><h1>${PAGE_LABELS[page]}</h1><p class="market-as-of" role="status" aria-live="polite" aria-atomic="true">${subtitle}</p></div><div class="header-actions">${action}</div></header>`;
 }
@@ -476,7 +489,7 @@ function blueDashboardOverview(m) {
   const marketValueLabel=allPrices?'目前持股市值':priceCount?'估算持股市值':'持股成本';
   const marketChangeLabel=!priceCount?'尚無收盤價；同步後顯示市值':!allPrices?`${priceCount}/${m.holdings.length} 檔使用收盤價，其餘暫以成本估算`:marketChange==null?'尚無外部投入可比較':`投入成果 ${marketChange>=0?'+':'−'}${fmt(Math.abs(marketChange))}（${fmtReturnPercent(marketChangeRate)}）`;
   const marketValueHint=allPrices?`採用截至 ${syncSummary.latestDate||'最近交易日'} 的收盤價`:priceCount?'此為混合收盤價與成本的估算值':'目前只顯示交易取得成本，不代表市場價值';
-  const goalAside=!hasGoal ? `<span>退休目標尚未設定</span><strong>設定退休規劃</strong><button data-page="budget">開始規劃 →</button>` : goalReached ? `<span class="goal-status">已達成目標</span><strong>${fmt(Math.abs(gap))}</strong><small>平均每月超過目標</small>` : `<span>尚未達標</span><strong>${fmt(gap)}</strong><small>平均每月仍需補足</small>`;
+  const goalAside=!hasGoal ? `<span>退休目標尚未設定</span><strong>設定生活預算</strong><button data-page="budget">開始規劃 →</button>` : goalReached ? `<span class="goal-status">已達成目標</span><strong>${fmt(Math.abs(gap))}</strong><small>平均每月超過目標</small>` : `<span>尚未達標</span><strong>${fmt(gap)}</strong><small>平均每月仍需補足</small>`;
   const onboarding=getOnboardingState(), journey=overviewJourneyCard(onboarding),retirementSnapshot=onboarding.isComplete?overviewRetirementSnapshot():'';
   if (!onboarding.budgetDone && !onboarding.holdingsDone) return `${journey}${onboardingPreview()}`;
   return `${journey}<section class="blue-goal-card ${goalReached?'is-reached':'is-progress'} ${hasGoal?'':'is-unset'}"><div class="blue-goal-main"><p class="eyebrow">退休生活費覆蓋率</p><div class="blue-goal-value"><strong>${coverage==null?'尚無資料':`${coverage.toFixed(1)}%`}</strong><span>股息目前可支付幾成退休生活費 · ${averageLabel}</span></div><div class="blue-progress" role="progressbar" aria-label="退休生活費覆蓋率" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.min(coverage||0,100).toFixed(0)}"><i style="width:${Math.min(coverage||0,100)}%"></i></div><p>平均月股息 <b>${fmt(avg)}</b><span>／</span>退休月現金流目標 <b>${hasGoal?fmt(target):'尚未設定'}</b></p><small class="goal-source">${currentTargetLabel()} <button data-page="budget">查看明細</button></small></div><div class="blue-goal-gap">${goalAside}</div></section>${retirementSnapshot}<section class="blue-kpis"><article><span>${marketValueLabel}</span><strong>${fmt(m.market)}</strong><small class="market-change ${marketChange == null ? '' : marketChange>=0?'positive':'negative'}">${marketChangeLabel}</small><small>${marketValueHint}</small></article><article><span>${currentYear} 年已入帳股息</span><strong>${fmt(paidThisYear)}</strong><small>不包含尚未發放項目</small></article><article><span>${currentYear} 年預計再入帳</span><strong>${fmt(upcomingThisYear)}</strong><small>已公告、尚未發放</small></article></section>${transactions.length?`<section class="panel asset-trend-panel"><div class="panel-title trend-heading"><div><p class="eyebrow">資產軌跡</p><h2>資產走勢</h2></div></div><div id="trendChartMount">${trendChart()}</div></section>`:emptyState()}`;
@@ -530,7 +543,7 @@ function projectionChart(projection) {
   return `<div class="projection-chart-head"><div><h2>退休前後資產變化</h2><p>移動到圖表任一位置可查看最接近的年度；固定推演至 100 歲。</p></div><div class="projection-legend" aria-label="圖例"><span><i></i>預估資產</span><span><i class="target"></i>退休目標</span>${retirementLegend}</div></div><div class="projection-chart-stage" id="projectionRetirementChart" tabindex="0" aria-label="${aria}"><svg class="projection-chart-svg" viewBox="0 0 1000 250" aria-hidden="true"><g class="projection-grid"><line x1="70" x2="976" y1="18" y2="18"/><line x1="70" x2="976" y1="81" y2="81"/><line x1="70" x2="976" y1="145" y2="145"/><line x1="70" x2="976" y1="208" y2="208"/></g>${retirementMarkup}<path class="projection-target-line" d="${targetPath}"/><path class="projection-asset-line" d="${assetPath}"/><g class="projection-chart-focus" id="projectionChartFocus"><line class="projection-crosshair" x1="70" x2="70" y1="18" y2="208"/><circle class="projection-focus-dot" cx="70" cy="208" r="5"/></g><g class="projection-axis">${ticks}<text x="62" y="22" text-anchor="end">${compact(maximum)}</text><text x="62" y="212" text-anchor="end">0</text></g></svg><div class="projection-tooltip" id="projectionTooltip" role="status">${projectionTooltip(initialRow,projection)}</div></div>`;
 }
 function retirementProjectionResult(projection) {
-  if (!projection.currentMonthlyExpense) return `<section class="panel projection-needs-data"><p class="eyebrow">還差一項資料</p><h2>先建立退休生活預算</h2><p>完成至少一筆生活支出後，才能計算通膨後生活費、退休目標資產與達標年齡。</p><button class="primary" type="button" data-page="budget">前往退休規劃</button></section>`;
+  if (!projection.currentMonthlyExpense) return `<section class="panel projection-needs-data"><p class="eyebrow">還差一項資料</p><h2>先建立退休生活預算</h2><p>完成至少一筆生活支出後，才能計算通膨後生活費、退休目標資產與達標年齡。</p><button class="primary" type="button" data-page="budget">前往生活預算</button></section>`;
   const found=projection.targetAge!=null,retireNow=projection.targetAge===projection.currentAge,status=retireNow?'現在可退休':found?`預估 ${projection.targetAge-projection.currentAge} 年後`:'需要調整條件';
   const headline=retireNow?'現在已具備退休條件':found?`${projection.targetAge} 歲`:'100 歲前尚未達標';
   const summary=found?`依目前資產、每月投入、報酬與通膨假設，從 ${projection.targetAge} 歲開始退休，逐年提領生活費後可支應到 100 歲，預估剩餘 ${fmt(projection.assetsAtLifeExpectancy)}。`:'依目前條件推演到 100 歲，尚未同時滿足設定提領率與退休後資產不中途耗盡；可提高每月投入、降低生活費或調整進階假設。';
@@ -543,7 +556,7 @@ function retirementCalculatorPage() {
   const currentAssets=metrics().market,currentExpense=currentMonthlyTarget(),monthlyContribution=projectionMonthlyContribution(),forecast=dividendForecast(),projection=calculateRetirementProjection(projectionInput()),birthMonthConfirmed=retirementBirthMonthIsConfirmed();
   const assetSource=transactions.length?'依持股市值即時計算；缺少價格時以成本估算。':'尚未有持股資料，目前以 0 元試算。';
   const contributionSource=monthlyContribution===0?'預設為 0，可直接輸入預計投入金額。':'使用你儲存的投入計畫。';
-  return `<section class="projection-page"><section class="projection-source-grid"><article><span>目前可投資資產</span><strong>${fmt(currentAssets)}</strong><small>${assetSource}</small><button type="button" data-page="transactions">查看持股與交易</button></article><article><span>近 12 個月預估年股息</span><strong>${forecast.annual?fmt(forecast.annual):'尚無資料'}</strong><small>${forecast.annual?`依目前持股換算，殖利率約 ${(forecast.yield*100).toFixed(1)}%。`:'同步配息資料後會自動納入試算。'}</small><button type="button" data-page="dividends">查看股息現金流</button></article><article><span>目前月生活費目標</span><strong>${currentExpense?fmt(currentExpense):'尚未設定'}</strong><small>依各項生活費的金額基準月換算為本月幣值。</small><button type="button" data-page="budget">查看退休規劃</button></article></section><div class="projection-layout"><form id="retirementProjectionForm" class="panel projection-form" novalidate><div class="panel-title"><div><p class="eyebrow">我的退休計畫</p><h2>調整試算條件</h2><p>直接修改即可，結果與設定都會自動更新。</p></div></div><div class="projection-auto-rule"><b>股息優先，自動推算最早退休年齡</b><span>先用目前持股的配息推估支付生活費；不足時才依賣股提領率補足，並固定模擬到 100 歲。</span></div><div id="projectionFormError" class="budget-error-summary" role="alert" tabindex="-1" hidden></div><div class="projection-form-grid"><label class="wide">出生年月<input class="birth-month-input" name="birthMonth" type="month" min="1900-01" max="${currentYearMonth()}" value="${birthMonthConfirmed?projection.birthMonth:''}" required aria-describedby="birthMonthHint"><small id="birthMonthHint">${birthMonthConfirmed?`目前為 ${projection.currentAge} 歲；系統會自動更新年齡。`:'請先選擇出生年月；選擇後會自動更新試算。'}</small></label><label class="wide">退休當時其他月收入<input name="otherMonthlyIncome" type="number" min="0" max="10000000" step="1000" value="${projection.otherMonthlyIncome}" required><small>例如年金或租金；視為退休當年的固定金額，之後不自動隨通膨增加。</small></label><label class="wide">預計每月投入<input name="monthlyContribution" type="number" min="0" max="10000000" step="1000" value="${monthlyContribution.toFixed(0)}" required><small>${contributionSource}</small></label></div><details class="projection-assumptions"><summary>進階假設</summary><div class="projection-form-grid"><label>預期年化總報酬率<input name="annualReturnRate" type="number" min="0" max="20" step="0.1" value="${settings.retirementAnnualReturnRate}" required><small>包含配息；系統會扣除預估股息後，作為股價成長推估，避免重複計算。</small></label><label>預期年通膨率<input name="inflationRate" type="number" min="0" max="10" step="0.1" value="${settings.retirementInflationRate}" required><small>依每筆生活費的金額基準月逐年換算。</small></label><label class="wide">賣股提領率上限<input name="withdrawalRate" type="number" min="0" max="10" step="0.1" value="${settings.retirementWithdrawalRate}" required><small>預設 0%；股息與其他收入不足時，最多可賣出資產的多少比例補足生活費。</small></label></div></details><p class="projection-auto-save" id="projectionSaveStatus" role="status">修改後會自動儲存</p></form><div id="retirementProjectionResult">${birthMonthConfirmed?retirementProjectionResult(projection):retirementBirthMonthRequiredResult()}</div></div><p class="projection-disclaimer">股息以目前持股近 12 個月已知配息推估；本試算固定推演到 100 歲，未計入稅費及市場波動，結果僅供規劃參考。</p></section>`;
+  return `<section class="projection-page"><section class="projection-source-grid"><article><span>目前可投資資產</span><strong>${fmt(currentAssets)}</strong><small>${assetSource}</small><button type="button" data-page="transactions">查看持股與交易</button></article><article><span>近 12 個月預估年股息</span><strong>${forecast.annual?fmt(forecast.annual):'尚無資料'}</strong><small>${forecast.annual?`依目前持股換算，殖利率約 ${(forecast.yield*100).toFixed(1)}%。`:'同步配息資料後會自動納入試算。'}</small><button type="button" data-page="dividends">查看股息現金流</button></article><article><span>目前月生活費目標</span><strong>${currentExpense?fmt(currentExpense):'尚未設定'}</strong><small>依各項生活費的金額基準月換算為本月幣值。</small><button type="button" data-page="budget">查看生活預算</button></article></section><div class="projection-layout"><form id="retirementProjectionForm" class="panel projection-form" novalidate><div class="panel-title"><div><p class="eyebrow">我的退休計畫</p><h2>調整試算條件</h2><p>直接修改即可，結果與設定都會自動更新。</p></div></div><div class="projection-auto-rule"><b>股息優先，自動推算最早退休年齡</b><span>先用目前持股的配息推估支付生活費；不足時才依賣股提領率補足，並固定模擬到 100 歲。</span></div><div id="projectionFormError" class="budget-error-summary" role="alert" tabindex="-1" hidden></div><div class="projection-form-grid"><label class="wide">出生年月<input class="birth-month-input" name="birthMonth" type="month" min="1900-01" max="${currentYearMonth()}" value="${birthMonthConfirmed?projection.birthMonth:''}" required aria-describedby="birthMonthHint"><small id="birthMonthHint">${birthMonthConfirmed?`目前為 ${projection.currentAge} 歲；系統會自動更新年齡。`:'請先選擇出生年月；選擇後會自動更新試算。'}</small></label><label class="wide">退休當時其他月收入<input name="otherMonthlyIncome" type="number" min="0" max="10000000" step="1000" value="${projection.otherMonthlyIncome}" required><small>例如年金或租金；視為退休當年的固定金額，之後不自動隨通膨增加。</small></label><label class="wide">預計每月投入<input name="monthlyContribution" type="number" min="0" max="10000000" step="1000" value="${monthlyContribution.toFixed(0)}" required><small>${contributionSource}</small></label></div><details class="projection-assumptions"><summary>進階假設</summary><div class="projection-form-grid"><label>預期年化總報酬率<input name="annualReturnRate" type="number" min="0" max="20" step="0.1" value="${settings.retirementAnnualReturnRate}" required><small>包含配息；系統會扣除預估股息後，作為股價成長推估，避免重複計算。</small></label><label>預期年通膨率<input name="inflationRate" type="number" min="0" max="10" step="0.1" value="${settings.retirementInflationRate}" required><small>依每筆生活費的金額基準月逐年換算。</small></label><label class="wide">賣股提領率上限<input name="withdrawalRate" type="number" min="0" max="10" step="0.1" value="${settings.retirementWithdrawalRate}" required><small>預設 0%；股息與其他收入不足時，最多可賣出資產的多少比例補足生活費。</small></label></div></details><p class="projection-auto-save" id="projectionSaveStatus" role="status">修改後會自動儲存</p></form><div id="retirementProjectionResult">${birthMonthConfirmed?retirementProjectionResult(projection):retirementBirthMonthRequiredResult()}</div></div><p class="projection-disclaimer">股息以目前持股近 12 個月已知配息推估；本試算固定推演到 100 歲，未計入稅費及市場波動，結果僅供規劃參考。</p></section>`;
 }
 function trendDailySeries() {
   if (!transactions.length) return [];
@@ -946,6 +959,11 @@ function startBudgetItem() { openBudgetEditor(); }
 function bindBudgetPage() {
   document.querySelector('#startBudget')?.addEventListener('click',startBudgetItem);
   document.querySelector('#addBudgetItem')?.addEventListener('click',()=>openBudgetEditor());
+  document.querySelector('[data-budget-reorder]')?.addEventListener('click',()=>{
+    budgetReorderMode=!budgetReorderMode;
+    render();
+    requestAnimationFrame(()=>document.querySelector('[data-budget-reorder]')?.focus({preventScroll:true}));
+  });
   document.querySelectorAll('[data-budget-suggestion]').forEach(button=>button.addEventListener('click',()=>addBudgetSuggestion(Number(button.dataset.budgetSuggestion))));
   document.querySelector('#budgetItemForm')?.addEventListener('submit',saveBudgetItem); document.querySelectorAll('input[name="calculationMode"]').forEach(input=>input.addEventListener('change',updateBudgetPreview));document.querySelector('#budgetFrequency')?.addEventListener('change',updateBudgetPreview);document.querySelector('#budgetCategory')?.addEventListener('change',updateBudgetPreview);document.querySelector('#budgetName')?.addEventListener('input',updateBudgetPreview);document.querySelector('#budgetAmount')?.addEventListener('input',()=>mirrorBudgetAmount('recurring'));document.querySelector('#budgetReplacementAmount')?.addEventListener('input',()=>mirrorBudgetAmount('replacement'));document.querySelector('#budgetAmountBaseMonth')?.addEventListener('input',()=>mirrorBudgetBaseMonth('recurring'));document.querySelector('#budgetReplacementBaseMonth')?.addEventListener('input',()=>mirrorBudgetBaseMonth('replacement'));document.querySelector('#budgetInterval')?.addEventListener('input',updateBudgetPreview);document.querySelector('#budgetReplacementCycle')?.addEventListener('input',updateBudgetPreview);document.querySelector('#useReplacementMode')?.addEventListener('click',()=>{document.querySelector('#budgetModeReplacement').checked=true;updateBudgetPreview();});
   updateBudgetPreview(); document.querySelector('#cancelBudgetEdit')?.addEventListener('click',closeBudgetEditor);document.querySelectorAll('[data-budget-edit]').forEach(button=>button.addEventListener('click',()=>{budgetEditId=button.dataset.budgetEdit;budgetDraft=null;budgetEditorOpen=true;render();focusBudgetEditor();}));document.querySelectorAll('[data-budget-toggle]').forEach(button=>button.addEventListener('click',async()=>{const item=budgetItems.find(row=>row.id===button.dataset.budgetToggle);if(!item)return;await budgetItemRepository.save({...item,isActive:item.isActive===false,updatedAt:new Date().toISOString()});await load();}));document.querySelectorAll('[data-budget-move]').forEach(button=>button.addEventListener('click',()=>moveBudgetItem(button.dataset.budgetId,button.dataset.budgetMove,button.dataset.budgetBucket)));document.querySelectorAll('[data-budget-delete]').forEach(button=>button.addEventListener('click',()=>deleteBudgetItem(button.dataset.budgetDelete)));document.querySelector('#undoBudgetDelete')?.addEventListener('click',restoreBudgetItem);
@@ -1039,54 +1057,55 @@ function addNumberSteppers(scope=document) {
     increase.type='button';increase.className='number-stepper-button';increase.dataset.numberStepDirection='1';increase.setAttribute('aria-label',`增加${label}`);increase.textContent='＋';
     // Keep the input first so its surrounding <label> focuses the field, not the decrease button.
     wrapper.append(input,decrease,increase);
-    let repeatDelayTimer,repeatTimer,ignorePointerClickUntil=0;
-    const changeValue=button=>{
+    let repeatDelayTimer=null,repeatTimer=null,activeButton=null,activePointerId=null,activeValueChanged=false;
+    const changeValue=(button,commit=false)=>{
       if (input.disabled) return false;
       const step=numberStepperStep(input),min=input.min==='' ? -Number.MAX_SAFE_INTEGER : Number(input.min),max=input.max==='' ? Number.MAX_SAFE_INTEGER : Number(input.max),current=Number.isFinite(input.valueAsNumber) ? input.valueAsNumber : 0;
       const next=Math.max(min,Math.min(max,current+step*Number(button.dataset.numberStepDirection)));
       if (next===current) return false;
       input.value=String(Math.round(next*1000000)/1000000);
       input.dispatchEvent(new Event('input',{bubbles:true}));
-      input.dispatchEvent(new Event('change',{bubbles:true}));
+      if (commit) input.dispatchEvent(new Event('change',{bubbles:true}));
       return true;
     };
-    const stopRepeating=button=>{
+    const finishPointerStep=()=>{
+      if (!activeButton) return;
+      const button=activeButton,shouldCommit=activeValueChanged;
       clearTimeout(repeatDelayTimer);clearInterval(repeatTimer);
+      repeatDelayTimer=null;repeatTimer=null;activeButton=null;activePointerId=null;activeValueChanged=false;
       delete button.dataset.repeating;
+      if (shouldCommit) input.dispatchEvent(new Event('change',{bubbles:true}));
     };
     wrapper.addEventListener('pointerdown',event=>{
       const button=event.target.closest('[data-number-step-direction]');
-      if (!button || input.disabled || event.button!==0) return;
-      event.preventDefault();button.focus();ignorePointerClickUntil=Date.now()+500;
-      if (!changeValue(button)) return;
-      button.dataset.repeating='true';
+      if (!button || input.disabled || event.button!==0 || activeButton) return;
+      event.preventDefault();button.focus();
+      activeButton=button;activePointerId=event.pointerId;activeValueChanged=changeValue(button);
+      if (!activeValueChanged) { finishPointerStep(); return; }
       button.setPointerCapture?.(event.pointerId);
       repeatDelayTimer=setTimeout(()=>{
-        repeatTimer=setInterval(()=>{if(!changeValue(button))stopRepeating(button);},75);
+        if (!activeButton) return;
+        button.dataset.repeating='true';
+        repeatTimer=setInterval(()=>{
+          if (!activeButton || !changeValue(button)) finishPointerStep();
+          else activeValueChanged=true;
+        },75);
       },350);
     });
-    wrapper.addEventListener('pointerup',event=>{
-      const button=event.target.closest('[data-number-step-direction]');
-      if (button) stopRepeating(button);
-    });
-    wrapper.addEventListener('pointercancel',event=>{
-      const button=event.target.closest('[data-number-step-direction]');
-      if (button) stopRepeating(button);
-    });
+    wrapper.addEventListener('pointerup',event=>{if(event.pointerId===activePointerId)finishPointerStep();});
+    wrapper.addEventListener('pointercancel',event=>{if(event.pointerId===activePointerId)finishPointerStep();});
+    wrapper.addEventListener('lostpointercapture',event=>{if(event.pointerId===activePointerId)finishPointerStep();});
     wrapper.addEventListener('pointermove',event=>{
-      const button=event.target.closest('[data-number-step-direction]');
-      if (!button?.dataset.repeating) return;
-      const rect=button.getBoundingClientRect();
-      if (event.clientX<rect.left || event.clientX>rect.right || event.clientY<rect.top || event.clientY>rect.bottom) stopRepeating(button);
-    });
-    wrapper.addEventListener('lostpointercapture',event=>{
-      const button=event.target.closest('[data-number-step-direction]');
-      if (button) stopRepeating(button);
+      if (event.pointerId!==activePointerId || !activeButton) return;
+      const rect=activeButton.getBoundingClientRect();
+      if (event.clientX<rect.left || event.clientX>rect.right || event.clientY<rect.top || event.clientY>rect.bottom) finishPointerStep();
     });
     wrapper.addEventListener('click',event=>{
       const button=event.target.closest('[data-number-step-direction]');
-      if (!button || input.disabled || Date.now()<ignorePointerClickUntil) return;
-      changeValue(button);
+      // Physical mouse/touch clicks were already handled by pointerdown. A detail of 0
+      // identifies keyboard, assistive-technology, and programmatic activation.
+      if (!button || input.disabled || event.detail!==0) return;
+      changeValue(button,true);
     });
   });
 }

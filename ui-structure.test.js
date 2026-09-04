@@ -485,11 +485,15 @@ test('retirement calculator connects portfolio, budget, projection assumptions a
   assert.match(source, /function addNumberSteppers/);
   assert.match(source, /data-number-step-direction/);
   assert.match(source, /wrapper\.append\(input,decrease,increase\)/);
-  assert.match(source, /wrapper\.addEventListener\('pointerdown'/);
-  assert.match(source, /wrapper\.addEventListener\('pointerup'/);
-  assert.match(source, /wrapper\.addEventListener\('pointermove'/);
-  assert.match(source, /setTimeout\(\(\)=>\{/);
-  assert.match(source, /setInterval\(\(\)=>\{/);
+  const numberStepperBinding = source.slice(source.indexOf('function addNumberSteppers'), source.indexOf('function bindRetirementCalculator'));
+  assert.match(numberStepperBinding, /wrapper\.addEventListener\('pointerdown'/);
+  assert.match(numberStepperBinding, /wrapper\.addEventListener\('pointerup'/);
+  assert.match(numberStepperBinding, /wrapper\.addEventListener\('click'/);
+  assert.match(numberStepperBinding, /setInterval/);
+  assert.match(numberStepperBinding, /finishPointerStep/);
+  assert.match(numberStepperBinding, /input\.dispatchEvent\(new Event\('change'/);
+  assert.match(numberStepperBinding, /event\.detail!==0/);
+  assert.doesNotMatch(numberStepperBinding, /lastPointerHandledAt|ignorePointerClickUntil/);
   assert.match(source, /預期年化總報酬率/);
   assert.match(source, /正在自動儲存/);
   assert.doesNotMatch(source, /儲存試算設定/);
@@ -515,7 +519,7 @@ test('retirement calculator connects portfolio, budget, projection assumptions a
 test('navigation keeps the two primary input pages together before retirement analysis', () => {
   const source = fs.readFileSync('app.js', 'utf8');
   const labels = source.slice(source.indexOf('const PAGE_LABELS'), source.indexOf('async function load'));
-  assert.match(labels, /budget: '退休規劃',[\s\S]*transactions: '持股與交易',[\s\S]*'retirement-calculator': '退休試算'/);
+  assert.match(labels, /budget: '退休生活預算',[\s\S]*transactions: '持股與交易',[\s\S]*'retirement-calculator': '退休試算'/);
 });
 
 test('retirement budget items expose an explicit price basis month', () => {
@@ -523,4 +527,11 @@ test('retirement budget items expose an explicit price basis month', () => {
   assert.match(source, /name="amountBaseMonth" type="month"/);
   assert.match(source, /金額基準月/);
   assert.match(source, /pricingChanged/);
+});
+
+test('custom budget buffer keeps displaying preset-equivalent values', () => {
+  const source = fs.readFileSync('app.js', 'utf8');
+  const panel = source.slice(source.indexOf('function budgetGoalSettingsPanel'), source.indexOf('function budgetEditor'));
+  assert.match(panel, /id="customBufferRate"[^>]*value="\$\{bufferRate\}"/);
+  assert.doesNotMatch(panel, /includes\(bufferRate\).*bufferRate\s*:\s*''/);
 });
