@@ -54,7 +54,7 @@ export function planCsvTransactionImport(text, existingTransactions, createId, c
     const error = !isIsoCalendarDate(date) ? '日期必須是有效的 YYYY-MM-DD'
       : !Object.hasOwn(ACQUISITIONS, acquisitionType) ? `取得方式必須是 ${Object.keys(ACQUISITIONS).join('、')}`
       : !SYMBOL_PATTERN.test(symbol) ? '股票代號只能包含英數字、句點、底線或連字號，且最多 12 字元'
-      : !(Number.isFinite(quantity) && quantity > 0) ? '股數必須是大於 0 的有限數字'
+      : !(Number.isFinite(quantity) && Number.isInteger(quantity) && quantity >= 1) ? '台股股數須為至少 1 股的整數'
       : acquisitionType !== 'STOCK_DIVIDEND' && !(Number.isFinite(price) && price > 0) ? '此取得方式的價格必須是大於 0 的有限數字'
       : !(Number.isFinite(fee) && fee >= 0) ? '手續費必須是大於或等於 0 的有限數字'
       : '';

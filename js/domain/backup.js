@@ -12,6 +12,7 @@ function backupIsoCalendarDate(value) {
   const date = new Date(Date.UTC(year, month - 1, day));
   return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day;
 }
+function backupYearMonth(value) { return /^\d{4}-(0[1-9]|1[0-2])$/.test(value || ''); }
 
 function assertRecordIds(records, label) {
   const ids = new Set();
@@ -35,11 +36,26 @@ export function validateBackupPayload(data, expectedSchemaVersion, acquisitionTy
     if (!backupIsoCalendarDate(transaction.date)) throw Error(`${prefix}日期格式錯誤`);
     if (!acquisitionTypes.includes(transaction.acquisitionType)) throw Error(`${prefix}取得方式錯誤`);
     if (!SAFE_SYMBOL.test(transaction.symbol || '')) throw Error(`${prefix}股票代號格式錯誤`);
-    if (!(isFiniteNumber(transaction.quantity) && Number(transaction.quantity) > 0)) throw Error(`${prefix}股數必須是大於 0 的有限數字`);
+    if (!(isFiniteNumber(transaction.quantity) && Number.isInteger(Number(transaction.quantity)) && Number(transaction.quantity) >= 1)) throw Error(`${prefix}台股股數須為至少 1 股的整數`);
     if (transaction.acquisitionType !== 'STOCK_DIVIDEND' && !(isFiniteNumber(transaction.price) && Number(transaction.price) > 0)) throw Error(`${prefix}成交價必須是大於 0 的有限數字`);
     if (!(isFiniteNumber(transaction.fee) && Number(transaction.fee) >= 0)) throw Error(`${prefix}手續費不得小於 0`);
   });
   if (data.settings.dividendDateBasis != null && !['PAYMENT_DATE', 'EX_DIVIDEND_DATE'].includes(data.settings.dividendDateBasis)) throw Error('設定中的股息日期基準錯誤');
+  const projectionRanges = [
+    ['retirementCurrentAge',18,79,'目前年齡'], ['retirementTargetAge',19,90,'退休年齡'],
+    ['retirementOtherMonthlyIncome',0,10000000,'其他月收入'], ['retirementMonthlyContribution',0,10000000,'每月投入'],
+    ['retirementAnnualReturnRate',0,20,'年化總報酬率'], ['retirementInflationRate',0,10,'通膨率'],
+    ['retirementWithdrawalRate',0,10,'賣股提領率'], ['retirementLifeExpectancy',20,110,'預估壽命'],
+  ];
+  projectionRanges.forEach(([key,min,max,label]) => {
+    const value=data.settings[key];
+    if (value != null && !(isFiniteNumber(value) && Number(value)>=min && Number(value)<=max)) throw Error(`設定中的${label}錯誤`);
+  });
+  if (data.settings.retirementCurrentAge != null && data.settings.retirementTargetAge != null && Number(data.settings.retirementTargetAge)<=Number(data.settings.retirementCurrentAge)) throw Error('設定中的退休年齡必須大於目前年齡');
+  if (data.settings.retirementTargetAge != null && !Number.isInteger(Number(data.settings.retirementTargetAge))) throw Error('設定中的退休年齡必須是整數');
+  if (data.settings.retirementLifeExpectancy != null && !Number.isInteger(Number(data.settings.retirementLifeExpectancy))) throw Error('設定中的預估壽命必須是整數');
+  if (data.settings.retirementBirthMonth != null && !backupYearMonth(data.settings.retirementBirthMonth)) throw Error('設定中的出生年月格式錯誤');
+  if (data.settings.retirementLifeExpectancy != null && data.settings.retirementTargetAge != null && Number(data.settings.retirementLifeExpectancy)<=Number(data.settings.retirementTargetAge)) throw Error('設定中的預估壽命必須大於退休年齡');
   data.budgetPlans.forEach((plan, index) => {
     const prefix = `退休計畫第 ${index + 1} 筆`;
     if (plan.selectedTarget != null && !['NEEDS_ONLY', 'NEEDS_AND_WANTS'].includes(plan.selectedTarget)) throw Error(`${prefix}目標類型錯誤`);
@@ -58,6 +74,7 @@ export function validateBackupPayload(data, expectedSchemaVersion, acquisitionTy
       if (['EVERY_N_MONTHS', 'EVERY_N_YEARS'].includes(item.frequency) && !(isFiniteNumber(item.intervalCount) && Number(item.intervalCount) >= 1 && Number(item.intervalCount) <= 120)) throw Error(`${prefix}間隔錯誤`);
     }
     if (item.note != null && String(item.note).length > 120) throw Error(`${prefix}備註過長`);
+    if (item.amountBaseMonth != null && !backupYearMonth(item.amountBaseMonth)) throw Error(`${prefix}金額基準月格式錯誤`);
   });
   return data;
 }

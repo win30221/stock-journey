@@ -58,6 +58,26 @@ export function calculateDividendReceipts({ transactions, marketCaches, dateBasi
     .filter(dividend => dividend.eligible > 0 && dividend.basis);
 }
 
+export function calculateProjectedAnnualDividends({ transactions, marketCaches, asOfDate }) {
+  const end = /^\d{4}-\d{2}-\d{2}$/.test(asOfDate || '') ? asOfDate : new Date().toISOString().slice(0, 10);
+  const startDate = new Date(`${end}T00:00:00`);
+  startDate.setFullYear(startDate.getFullYear() - 1);
+  const start = `${startDate.getFullYear()}-${String(startDate.getMonth() + 1).padStart(2, '0')}-${String(startDate.getDate()).padStart(2, '0')}`;
+  const quantities = transactionQuantityIndex(transactions);
+  const rows = marketCaches.flatMap(cache => (cache.dividends || []).map(dividend => ({ ...dividend, symbol:cache.symbol })))
+    .filter(dividend => Number(dividend.cash) > 0)
+    .filter(dividend => {
+      const eventDate=dividend.exDate || dividend.paymentDate;
+      return eventDate && eventDate > start && eventDate <= end;
+    })
+    .map(dividend => {
+      const quantity=quantityFromIndex(quantities, dividend.symbol, end);
+      return { symbol:dividend.symbol, date:dividend.exDate || dividend.paymentDate, cash:Number(dividend.cash), quantity, amount:quantity * Number(dividend.cash) };
+    })
+    .filter(row => row.amount > 0);
+  return { start, end, rows, annual:rows.reduce((total,row)=>total+row.amount,0) };
+}
+
 export function calculateStockDividendChecks(transactions, marketCaches) {
   const quantities = transactionQuantityIndex(transactions);
   const priceDates = priceDateIndex(marketCaches);

@@ -82,6 +82,8 @@ test('manual transaction form previews total cost while typing', () => {
 
   assert.match(source, /class="transaction-cost-preview" role="status" aria-live="polite" aria-atomic="true"/);
   assert.match(source, /function updateTransactionCostPreview\(\)/);
+  assert.match(source, /id="transactionQuantity" name="quantity" type="number" min="1" step="1"/);
+  assert.match(source, /台股股數須為至少 1 股的整數/);
   assert.match(source, /output\.textContent=fmt\(quantity\*price\+fee\)/);
   assert.match(source, /input\.removeAttribute\('aria-invalid'\);updateTransactionCostPreview\(\)/);
   assert.match(styles, /\.transaction-cost-preview\s*\{/);
@@ -415,4 +417,63 @@ test('styles.css has balanced braces without unclosed selectors', () => {
   const openCount = (styles.match(/\{/g) || []).length;
   const closeCount = (styles.match(/\}/g) || []).length;
   assert.equal(openCount, closeCount, 'number of opening braces must match closing braces in styles.css');
+});
+
+test('retirement calculator connects portfolio, budget, projection assumptions and accessible results', () => {
+  const source = fs.readFileSync('app.js', 'utf8');
+  const styles = fs.readFileSync('styles.css', 'utf8');
+  assert.match(source, /'retirement-calculator': '退休試算'/);
+  assert.match(source, /function retirementCalculatorPage\(/);
+  assert.match(source, /currentAssets:m\.market/);
+  assert.match(source, /currentMonthlyExpense:currentMonthlyTarget\(\)/);
+  assert.match(source, /function inferredMonthlyContribution\(/);
+  assert.match(source, /id="retirementProjectionForm"/);
+  assert.match(source, /id="projectionRetirementChart"[^>]*tabindex="0"/);
+  assert.match(source, /name="birthMonth" type="month"/);
+  assert.doesNotMatch(source, /name="lifeExpectancy"/);
+  assert.doesNotMatch(source, /name="targetAge"/);
+  assert.match(source, /autoRetirementAge:true/);
+  assert.match(source, /固定模擬到 100 歲/);
+  assert.match(source, /stage\.addEventListener\('pointermove'/);
+  assert.match(source, /row\.age%10===0/);
+  assert.match(source, /calculateProjectedAnnualDividends/);
+  assert.match(source, /賣股提領率上限/);
+  assert.match(source, /預設 0%/);
+  assert.match(source, /試算方式與公式/);
+  assert.match(source, /function addProjectionMethodInfo/);
+  assert.match(source, /function addNumberSteppers/);
+  assert.match(source, /data-number-step-direction/);
+  assert.match(source, /wrapper\.append\(input,decrease,increase\)/);
+  assert.match(source, /預期年化總報酬率/);
+  assert.match(source, /正在自動儲存/);
+  assert.doesNotMatch(source, /儲存試算設定/);
+  assert.match(source, /setAttribute\('aria-invalid','true'\)/);
+  assert.match(styles, /\.projection-layout\s*\{/);
+  assert.match(styles, /\.projection-form-grid\s*\{/);
+  assert.match(styles, /\.projection-chart-svg\s*\{/);
+  assert.match(styles, /\.projection-form-grid input\[aria-invalid="true"\]/);
+  assert.match(styles, /\.number-stepper\s*\{/);
+  assert.match(styles, /\.number-stepper input\s*\{[^}]*text-align:\s*center/);
+  assert.match(styles, /\.projection-retirement-line\s*\{/);
+  assert.match(source, /projection-retirement-label/);
+  assert.match(source, />可退休</);
+  assert.match(styles, /\.projection-retirement-label rect\s*\{/);
+  assert.match(styles, /\.projection-tooltip\s*\{/);
+  assert.match(styles, /\.projection-method\s*\{/);
+  assert.doesNotMatch(source, /projectionYearDetail|projectionYearSelect/);
+  const chartBinding = source.slice(source.indexOf('function bindProjectionChart'), source.indexOf('function bindRetirementCalculator'));
+  assert.doesNotMatch(chartBinding, /\bselect\b/);
+});
+
+test('navigation keeps the two primary input pages together before retirement analysis', () => {
+  const source = fs.readFileSync('app.js', 'utf8');
+  const labels = source.slice(source.indexOf('const PAGE_LABELS'), source.indexOf('async function load'));
+  assert.match(labels, /budget: '退休規劃',[\s\S]*transactions: '持股與交易',[\s\S]*'retirement-calculator': '退休試算'/);
+});
+
+test('retirement budget items expose an explicit price basis month', () => {
+  const source = fs.readFileSync('app.js', 'utf8');
+  assert.match(source, /name="amountBaseMonth" type="month"/);
+  assert.match(source, /金額基準月/);
+  assert.match(source, /pricingChanged/);
 });

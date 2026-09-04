@@ -305,6 +305,131 @@ function calculateBudgetSummary(plan, items) {
   return { plan, active, needsAnnual, wantsAnnual, selectedAnnual, bufferAnnual, targetAnnual:selectedAnnual + bufferAnnual, targetMonthly:(selectedAnnual + bufferAnnual) / 12 };
 }
 
+const YEAR_MONTH_PATTERN = /^\d{4}-(0[1-9]|1[0-2])$/;
+
+function isYearMonth(value) { return YEAR_MONTH_PATTERN.test(String(value || '')); }
+function monthNumber(value) { const [year, month] = String(value).split('-').map(Number);return year * 12 + month - 1; }
+function monthsBetweenYearMonths(from, to) { return isYearMonth(from) && isYearMonth(to) ? monthNumber(to) - monthNumber(from) : 0; }
+function addYearsToYearMonth(value, years) {
+  if (!isYearMonth(value)) return '';
+  const [year, month] = value.split('-').map(Number);
+  return `${year + Math.trunc(Number(years) || 0)}-${String(month).padStart(2, '0')}`;
+}
+function ageAtYearMonth(birthMonth, atMonth) {
+  if (!isYearMonth(birthMonth) || !isYearMonth(atMonth)) return null;
+  return Math.floor(monthsBetweenYearMonths(birthMonth, atMonth) / 12);
+}
+function inferBirthMonth(currentAge, atMonth) {
+  if (!isYearMonth(atMonth)) return '';
+  return addYearsToYearMonth(atMonth, -Math.max(0, Math.floor(Number(currentAge) || 0)));
+}
+function itemBaseMonth(item, fallback) {
+  const timestampMonth = String(item.updatedAt || item.createdAt || '').slice(0, 7);
+  return isYearMonth(item.amountBaseMonth) ? item.amountBaseMonth : isYearMonth(timestampMonth) ? timestampMonth : fallback;
+}
+function calculateBudgetSummaryAt(plan, items, { inflationRate = 0, asOfMonth, fallbackBaseMonth = asOfMonth } = {}) {
+  const rate = Math.max(0, Number(inflationRate) || 0);
+  const active = items.filter(item => item.isActive !== false).map(item => {
+    const baseMonth = itemBaseMonth(item, fallbackBaseMonth);
+    const elapsedYears = Math.max(0, monthsBetweenYearMonths(baseMonth, asOfMonth)) / 12;
+    return { ...item, adjustedAnnual:calculateAnnualBudget(item) * (1 + rate) ** elapsedYears, amountBaseMonth:baseMonth };
+  });
+  const needsAnnual = active.filter(item => item.bucket === 'NEED').reduce((total, item) => total + item.adjustedAnnual, 0);
+  const wantsAnnual = active.filter(item => item.bucket === 'WANT').reduce((total, item) => total + item.adjustedAnnual, 0);
+  const selectedAnnual = plan?.selectedTarget === 'NEEDS_ONLY' ? needsAnnual : needsAnnual + wantsAnnual;
+  const bufferAnnual = selectedAnnual * Number(plan?.bufferRateBps || 0) / 10000;
+  return { plan, active, needsAnnual, wantsAnnual, selectedAnnual, bufferAnnual, targetAnnual:selectedAnnual + bufferAnnual, targetMonthly:(selectedAnnual + bufferAnnual) / 12, asOfMonth };
+}
+
+function futureValue({ principal = 0, monthlyContribution = 0, annualReturnRate = 0, years = 0 }) {
+  const months = Math.max(0, Math.round(Number(years) * 12));
+  const monthlyRate = Number(annualReturnRate) / 12;
+  const startingValue = Math.max(0, Number(principal) || 0) * (1 + monthlyRate) ** months;
+  const contributionValue = monthlyRate
+    ? Math.max(0, Number(monthlyContribution) || 0) * (((1 + monthlyRate) ** months - 1) / monthlyRate)
+    : Math.max(0, Number(monthlyContribution) || 0) * months;
+  return startingValue + contributionValue;
+}
+
+function calculateRequiredMonthlyContribution({ targetAssets = 0, principal = 0, annualReturnRate = 0, years = 0 }) {
+  const months = Math.max(0, Math.round(Number(years) * 12));
+  if (!months) return Math.max(0, Number(targetAssets) - Number(principal));
+  const monthlyRate = Number(annualReturnRate) / 12;
+  const grownPrincipal = Math.max(0, Number(principal) || 0) * (1 + monthlyRate) ** months;
+  const contributionFactor = monthlyRate ? ((1 + monthlyRate) ** months - 1) / monthlyRate : months;
+  return Math.max(0, (Math.max(0, Number(targetAssets) || 0) - grownPrincipal) / contributionFactor);
+}
+
+function calculateRetirementProjection(input) {
+  const currentMonth = isYearMonth(input.currentMonth) ? input.currentMonth : '2026-01';
+  const birthMonth = isYearMonth(input.birthMonth) ? input.birthMonth : inferBirthMonth(input.currentAge, currentMonth);
+  const derivedAge = ageAtYearMonth(birthMonth, currentMonth);
+  const currentAge = Math.max(18, Math.min(79, derivedAge == null ? Number(input.currentAge) || 18 : derivedAge));
+  const automaticRetirementAge = input.autoRetirementAge === true;
+  const requestedTargetAge = Math.max(currentAge + 1, Math.min(90, Math.floor(Number(input.targetAge) || currentAge + 1)));
+  const lifeExpectancy = automaticRetirementAge ? 100 : Math.max(requestedTargetAge + 1, Math.min(110, Math.floor(Number(input.lifeExpectancy) || 90)));
+  const currentAssets = Math.max(0, Number(input.currentAssets) || 0);
+  const otherMonthlyIncome = Math.max(0, Number(input.otherMonthlyIncome) || 0);
+  const monthlyContribution = Math.max(0, Number(input.monthlyContribution) || 0);
+  const annualReturnRate = Math.max(0, Number(input.annualReturnRate) || 0);
+  const inflationRate = Math.max(0, Number(input.inflationRate) || 0);
+  const withdrawalRate = Math.max(0, Number(input.withdrawalRate) || 0);
+  const dividendYield = Math.max(0, Number(input.dividendYield) || 0);
+  const priceGrowthRate = annualReturnRate - dividendYield;
+  const hasItemizedBudget = Array.isArray(input.budgetItems) && input.budgetItems.length > 0;
+  const fallbackExpenseBaseMonth = isYearMonth(input.expenseBaseMonth) ? input.expenseBaseMonth : currentMonth;
+  const expenseAtMonth = month => hasItemizedBudget
+    ? calculateBudgetSummaryAt(input.budgetPlan, input.budgetItems, { inflationRate, asOfMonth:month, fallbackBaseMonth:fallbackExpenseBaseMonth }).targetMonthly
+    : Math.max(0, Number(input.currentMonthlyExpense) || 0) * (1 + inflationRate) ** (Math.max(0, monthsBetweenYearMonths(fallbackExpenseBaseMonth, month)) / 12);
+  const currentMonthlyExpense = expenseAtMonth(currentMonth);
+  const monthAtAge = age => age === currentAge ? currentMonth : addYearsToYearMonth(birthMonth, age);
+  const targetFor = (expense, monthlyIncome=otherMonthlyIncome) => {
+    const coverageRate=dividendYield + withdrawalRate, annualGap=Math.max(0, expense - monthlyIncome) * 12;
+    return annualGap === 0 ? 0 : coverageRate > 0 ? annualGap / coverageRate : null;
+  };
+  const simulateCandidate = candidateAge => {
+    const candidateMonth=monthAtAge(candidateAge),years=Math.max(0,monthsBetweenYearMonths(currentMonth,candidateMonth))/12,expense=expenseAtMonth(candidateMonth),target=targetFor(expense),assets=futureValue({principal:currentAssets,monthlyContribution,annualReturnRate,years});
+    let balance=assets,depletedAge=null;
+    for(let age=candidateAge+1;age<=lifeExpectancy;age+=1){const withdrawalMonth=monthAtAge(age-1),annualExpense=expenseAtMonth(withdrawalMonth)*12,dividendIncome=balance*dividendYield,requiredSale=Math.max(0,annualExpense-otherMonthlyIncome*12-dividendIncome),allowedSale=balance*withdrawalRate,saleWithdrawal=Math.min(requiredSale,allowedSale),shortfall=Math.max(0,requiredSale-saleWithdrawal);balance=Math.max(0,balance*(1+priceGrowthRate)-saleWithdrawal);if(depletedAge==null&&(balance<=0||shortfall>0))depletedAge=age;}
+    return { candidateMonth, years, expense, target, assets, balance, depletedAge, feasible:(target==null?Math.max(0,expense-otherMonthlyIncome)===0:assets>=target)&&depletedAge==null };
+  };
+  let retirementAge = automaticRetirementAge ? null : requestedTargetAge;
+  if (automaticRetirementAge) for (let age=currentAge;age<lifeExpectancy;age+=1) { if (simulateCandidate(age).feasible) { retirementAge=age;break; } }
+  const targetAge = retirementAge ?? lifeExpectancy;
+  const retirementMonth = monthAtAge(targetAge);
+  const lifeExpectancyMonth = addYearsToYearMonth(birthMonth, lifeExpectancy);
+  const yearsToTarget = Math.max(0, monthsBetweenYearMonths(currentMonth, retirementMonth)) / 12;
+  const expenseAtTarget = expenseAtMonth(retirementMonth);
+  const incomeAtTarget = otherMonthlyIncome;
+  const targetAssets = targetFor(expenseAtTarget, incomeAtTarget);
+  const projectedAssets = futureValue({ principal:currentAssets, monthlyContribution, annualReturnRate, years:yearsToTarget });
+  const requiredMonthlyContribution = targetAssets == null ? null : calculateRequiredMonthlyContribution({ targetAssets, principal:currentAssets, annualReturnRate, years:yearsToTarget });
+  const series = [];
+  let achievedAge = automaticRetirementAge ? retirementAge : null;
+  for (let age = currentAge; age <= lifeExpectancy; age += 1) {
+    const pointMonth = monthAtAge(age);
+    const years = Math.max(0, monthsBetweenYearMonths(currentMonth, pointMonth)) / 12;
+    const expense = expenseAtMonth(pointMonth);
+    const required = targetFor(expense);
+    const accumulationAssets = futureValue({ principal:currentAssets, monthlyContribution, annualReturnRate, years });
+    if (!automaticRetirementAge && achievedAge == null && accumulationAssets >= required) achievedAge = age;
+    if (age <= targetAge) series.push({ age, year:Number(pointMonth.slice(0,4)), month:pointMonth, phase:retirementAge!=null&&age===targetAge?'retirement-start':'accumulation', assets:accumulationAssets, openingAssets:null, investmentReturn:null, annualContribution:age===currentAge?0:monthlyContribution*12, monthlyExpense:expense, annualWithdrawal:0, fundedWithdrawal:0, shortfall:0, actualWithdrawalRate:0, targetAssets:required });
+  }
+  let balance = projectedAssets, depletedAge = null;
+  for (let age = targetAge + 1; retirementAge != null && age <= lifeExpectancy; age += 1) {
+    const pointMonth=addYearsToYearMonth(birthMonth,age),withdrawalMonth=addYearsToYearMonth(birthMonth,age-1),openingAssets=balance,investmentReturn=openingAssets*priceGrowthRate,monthlyExpense=expenseAtMonth(withdrawalMonth),annualDividend=openingAssets*dividendYield,annualNeed=monthlyExpense*12,annualWithdrawal=Math.max(0,annualNeed-otherMonthlyIncome*12-annualDividend),allowedWithdrawal=openingAssets*withdrawalRate,fundedWithdrawal=Math.min(annualWithdrawal,allowedWithdrawal),shortfall=Math.max(0,annualWithdrawal-fundedWithdrawal);
+    balance=Math.max(0,openingAssets+investmentReturn-fundedWithdrawal);
+    if (depletedAge==null && (balance<=0 || shortfall>0)) depletedAge=age;
+    series.push({ age, year:Number(pointMonth.slice(0,4)), month:pointMonth, phase:'retirement', assets:balance, openingAssets, investmentReturn, annualContribution:0, monthlyExpense, annualDividend, annualWithdrawal, allowedWithdrawal, fundedWithdrawal, shortfall, actualWithdrawalRate:openingAssets>0?fundedWithdrawal/openingAssets:0, targetAssets:null });
+  }
+  return {
+    birthMonth, currentMonth, retirementMonth:retirementAge==null?null:retirementMonth, lifeExpectancyMonth, currentAge, targetAge:retirementAge, lifeExpectancy, yearsToTarget, currentAssets, currentMonthlyExpense, otherMonthlyIncome,
+    monthlyContribution, annualReturnRate, inflationRate, withdrawalRate, dividendYield, priceGrowthRate, expenseAtTarget,
+    incomeAtTarget, targetAssets, projectedAssets, requiredMonthlyContribution, achievedAge,
+    onTime:retirementAge!=null&&projectedAssets >= targetAssets, depletedAge, assetsAtLifeExpectancy:retirementAge==null?null:balance, lastsThroughLife:retirementAge!=null&&depletedAge==null, series,
+  };
+}
+
 // Source: js/domain/dividends.js
 function quantityAtDate(transactions, symbol, date) {
   return transactions.reduce((total, row) => row.symbol === symbol && row.date <= date ? total + Number(row.quantity) : total, 0);
@@ -364,6 +489,26 @@ function calculateDividendReceipts({ transactions, marketCaches, dateBasis }) {
       return { ...dividend, basis, eligibleDate, eligible, amount:eligible * Number(dividend.cash) };
     })
     .filter(dividend => dividend.eligible > 0 && dividend.basis);
+}
+
+function calculateProjectedAnnualDividends({ transactions, marketCaches, asOfDate }) {
+  const end = /^\d{4}-\d{2}-\d{2}$/.test(asOfDate || '') ? asOfDate : new Date().toISOString().slice(0, 10);
+  const startDate = new Date(`${end}T00:00:00`);
+  startDate.setFullYear(startDate.getFullYear() - 1);
+  const start = `${startDate.getFullYear()}-${String(startDate.getMonth() + 1).padStart(2, '0')}-${String(startDate.getDate()).padStart(2, '0')}`;
+  const quantities = transactionQuantityIndex(transactions);
+  const rows = marketCaches.flatMap(cache => (cache.dividends || []).map(dividend => ({ ...dividend, symbol:cache.symbol })))
+    .filter(dividend => Number(dividend.cash) > 0)
+    .filter(dividend => {
+      const eventDate=dividend.exDate || dividend.paymentDate;
+      return eventDate && eventDate > start && eventDate <= end;
+    })
+    .map(dividend => {
+      const quantity=quantityFromIndex(quantities, dividend.symbol, end);
+      return { symbol:dividend.symbol, date:dividend.exDate || dividend.paymentDate, cash:Number(dividend.cash), quantity, amount:quantity * Number(dividend.cash) };
+    })
+    .filter(row => row.amount > 0);
+  return { start, end, rows, annual:rows.reduce((total,row)=>total+row.amount,0) };
 }
 
 function calculateStockDividendChecks(transactions, marketCaches) {
@@ -436,6 +581,7 @@ function backupIsoCalendarDate(value) {
   const date = new Date(Date.UTC(year, month - 1, day));
   return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day;
 }
+function backupYearMonth(value) { return /^\d{4}-(0[1-9]|1[0-2])$/.test(value || ''); }
 
 function assertRecordIds(records, label) {
   const ids = new Set();
@@ -459,11 +605,26 @@ function validateBackupPayload(data, expectedSchemaVersion, acquisitionTypes) {
     if (!backupIsoCalendarDate(transaction.date)) throw Error(`${prefix}日期格式錯誤`);
     if (!acquisitionTypes.includes(transaction.acquisitionType)) throw Error(`${prefix}取得方式錯誤`);
     if (!SAFE_SYMBOL.test(transaction.symbol || '')) throw Error(`${prefix}股票代號格式錯誤`);
-    if (!(isFiniteNumber(transaction.quantity) && Number(transaction.quantity) > 0)) throw Error(`${prefix}股數必須是大於 0 的有限數字`);
+    if (!(isFiniteNumber(transaction.quantity) && Number.isInteger(Number(transaction.quantity)) && Number(transaction.quantity) >= 1)) throw Error(`${prefix}台股股數須為至少 1 股的整數`);
     if (transaction.acquisitionType !== 'STOCK_DIVIDEND' && !(isFiniteNumber(transaction.price) && Number(transaction.price) > 0)) throw Error(`${prefix}成交價必須是大於 0 的有限數字`);
     if (!(isFiniteNumber(transaction.fee) && Number(transaction.fee) >= 0)) throw Error(`${prefix}手續費不得小於 0`);
   });
   if (data.settings.dividendDateBasis != null && !['PAYMENT_DATE', 'EX_DIVIDEND_DATE'].includes(data.settings.dividendDateBasis)) throw Error('設定中的股息日期基準錯誤');
+  const projectionRanges = [
+    ['retirementCurrentAge',18,79,'目前年齡'], ['retirementTargetAge',19,90,'退休年齡'],
+    ['retirementOtherMonthlyIncome',0,10000000,'其他月收入'], ['retirementMonthlyContribution',0,10000000,'每月投入'],
+    ['retirementAnnualReturnRate',0,20,'年化總報酬率'], ['retirementInflationRate',0,10,'通膨率'],
+    ['retirementWithdrawalRate',0,10,'賣股提領率'], ['retirementLifeExpectancy',20,110,'預估壽命'],
+  ];
+  projectionRanges.forEach(([key,min,max,label]) => {
+    const value=data.settings[key];
+    if (value != null && !(isFiniteNumber(value) && Number(value)>=min && Number(value)<=max)) throw Error(`設定中的${label}錯誤`);
+  });
+  if (data.settings.retirementCurrentAge != null && data.settings.retirementTargetAge != null && Number(data.settings.retirementTargetAge)<=Number(data.settings.retirementCurrentAge)) throw Error('設定中的退休年齡必須大於目前年齡');
+  if (data.settings.retirementTargetAge != null && !Number.isInteger(Number(data.settings.retirementTargetAge))) throw Error('設定中的退休年齡必須是整數');
+  if (data.settings.retirementLifeExpectancy != null && !Number.isInteger(Number(data.settings.retirementLifeExpectancy))) throw Error('設定中的預估壽命必須是整數');
+  if (data.settings.retirementBirthMonth != null && !backupYearMonth(data.settings.retirementBirthMonth)) throw Error('設定中的出生年月格式錯誤');
+  if (data.settings.retirementLifeExpectancy != null && data.settings.retirementTargetAge != null && Number(data.settings.retirementLifeExpectancy)<=Number(data.settings.retirementTargetAge)) throw Error('設定中的預估壽命必須大於退休年齡');
   data.budgetPlans.forEach((plan, index) => {
     const prefix = `退休計畫第 ${index + 1} 筆`;
     if (plan.selectedTarget != null && !['NEEDS_ONLY', 'NEEDS_AND_WANTS'].includes(plan.selectedTarget)) throw Error(`${prefix}目標類型錯誤`);
@@ -482,6 +643,7 @@ function validateBackupPayload(data, expectedSchemaVersion, acquisitionTypes) {
       if (['EVERY_N_MONTHS', 'EVERY_N_YEARS'].includes(item.frequency) && !(isFiniteNumber(item.intervalCount) && Number(item.intervalCount) >= 1 && Number(item.intervalCount) <= 120)) throw Error(`${prefix}間隔錯誤`);
     }
     if (item.note != null && String(item.note).length > 120) throw Error(`${prefix}備註過長`);
+    if (item.amountBaseMonth != null && !backupYearMonth(item.amountBaseMonth)) throw Error(`${prefix}金額基準月格式錯誤`);
   });
   return data;
 }
@@ -540,7 +702,7 @@ function planCsvTransactionImport(text, existingTransactions, createId, createdA
     const error = !isIsoCalendarDate(date) ? '日期必須是有效的 YYYY-MM-DD'
       : !Object.hasOwn(ACQUISITIONS, acquisitionType) ? `取得方式必須是 ${Object.keys(ACQUISITIONS).join('、')}`
       : !SYMBOL_PATTERN.test(symbol) ? '股票代號只能包含英數字、句點、底線或連字號，且最多 12 字元'
-      : !(Number.isFinite(quantity) && quantity > 0) ? '股數必須是大於 0 的有限數字'
+      : !(Number.isFinite(quantity) && Number.isInteger(quantity) && quantity >= 1) ? '台股股數須為至少 1 股的整數'
       : acquisitionType !== 'STOCK_DIVIDEND' && !(Number.isFinite(price) && price > 0) ? '此取得方式的價格必須是大於 0 的有限數字'
       : !(Number.isFinite(fee) && fee >= 0) ? '手續費必須是大於或等於 0 的有限數字'
       : '';
@@ -713,6 +875,7 @@ function toast(message) {
 const PAGE_IDS = Object.freeze([
   'overview',
   'budget',
+  'retirement-calculator',
   'transactions',
   'dividends',
   'market-data',
@@ -735,7 +898,7 @@ function hashForPage(page) {
 }
 
 // Source: app.js
-let transactions = [], marketCaches = [], budgetPlans = [], budgetItems = [], syncProgress = '', settings = { id: 'default', monthlyExpenseTarget: 0, dividendDateBasis: 'PAYMENT_DATE', trendTooltipEventLimit: 3, showTotalAsset: true, showTotalReturn: true, gainMilestoneInterval: 1000000, showNewStockMarker: true, showManualBuyMarker: true, showRecurringInvestmentMarker: true, showDividendReinvestmentMarker: true, showStockDividendMarker: true, lastSuccessfulMarketSyncDate: null, lastMarketSyncAttemptDate: null, marketAutoSyncPausedUntil: null }, page = pageFromHash(globalThis.location?.hash), transactionModalOpen = false, dividendYear = null, marketSymbol = null, marketPriceMonth = null, autoSyncInProgress = false, marketSyncInProgress = false, marketSyncTimer = null, marketTradingDates = [], marketCalendarLoaded = false, marketCalendarRetryAfter = null;
+let transactions = [], marketCaches = [], budgetPlans = [], budgetItems = [], syncProgress = '', settings = { id: 'default', monthlyExpenseTarget: 0, dividendDateBasis: 'PAYMENT_DATE', retirementBirthMonth: null, retirementCurrentAge: 40, retirementTargetAge: 60, retirementLifeExpectancy: 90, retirementOtherMonthlyIncome: 0, retirementMonthlyContribution: null, retirementAnnualReturnRate: 6, retirementInflationRate: 2, retirementWithdrawalRate: 0, retirementSaleWithdrawalRateVersion: 1, trendTooltipEventLimit: 3, showTotalAsset: true, showTotalReturn: true, gainMilestoneInterval: 1000000, showNewStockMarker: true, showManualBuyMarker: true, showRecurringInvestmentMarker: true, showDividendReinvestmentMarker: true, showStockDividendMarker: true, lastSuccessfulMarketSyncDate: null, lastMarketSyncAttemptDate: null, marketAutoSyncPausedUntil: null }, page = pageFromHash(globalThis.location?.hash), transactionModalOpen = false, dividendYear = null, marketSymbol = null, marketPriceMonth = null, autoSyncInProgress = false, marketSyncInProgress = false, marketSyncTimer = null, marketTradingDates = [], marketCalendarLoaded = false, marketCalendarRetryAfter = null;
 let trendState = { frequency: 'month', range: 'all', start: null, end: null }, trendDetailDate = null;
 let budgetEditId = null, budgetEditorOpen = false, budgetDraft = null, budgetUndoItem = null, budgetUndoTimer = null, transactionEditId = null, transactionUndoRows = [], transactionUndoTimer = null, aiImportGuideOpen = false;
 let onboardingCompletionNoticeVisible = false;
@@ -825,6 +988,7 @@ const PAGE_LABELS = {
   overview: '投資總覽',
   budget: '退休規劃',
   transactions: '持股與交易',
+  'retirement-calculator': '退休試算',
   dividends: '股息現金流',
   'market-data': '市場資料',
   settings: '設定',
@@ -840,12 +1004,12 @@ async function load({ announceOnboardingCompletion = false } = {}) {
     stockCatalog = mergeStockCatalogs(stockCatalog, knownStockCatalog());
     budgetPlans = savedBudgetPlans;
     budgetItems = savedBudgetItems;
-    if (savedSettings) settings = { ...settings, ...savedSettings, id:savedSettings.id || 'default', monthlyExpenseTarget:savedSettings.monthlyExpenseTarget ?? 0, dividendDateBasis:savedSettings.dividendDateBasis || 'PAYMENT_DATE', trendTooltipEventLimit:normaliseTrendTooltipEventLimit(savedSettings.trendTooltipEventLimit), lastSuccessfulMarketSyncDate:savedSettings.lastSuccessfulMarketSyncDate || null, lastMarketSyncAttemptDate:savedSettings.lastMarketSyncAttemptDate || null, marketAutoSyncPausedUntil:savedSettings.marketAutoSyncPausedUntil || null };
+    if (savedSettings) { const currentMonth=today().slice(0,7),legacyAge=normaliseProjectionSetting(savedSettings.retirementCurrentAge,40,18,79),birthMonth=isYearMonth(savedSettings.retirementBirthMonth)?savedSettings.retirementBirthMonth:inferBirthMonth(legacyAge,currentMonth),hasSaleWithdrawalSetting=savedSettings.retirementSaleWithdrawalRateVersion===1; settings = { ...settings, ...savedSettings, id:savedSettings.id || 'default', monthlyExpenseTarget:savedSettings.monthlyExpenseTarget ?? 0, dividendDateBasis:savedSettings.dividendDateBasis || 'PAYMENT_DATE', retirementBirthMonth:birthMonth, retirementCurrentAge:ageAtYearMonth(birthMonth,currentMonth)??legacyAge, retirementTargetAge:normaliseProjectionSetting(savedSettings.retirementTargetAge,60,19,90), retirementLifeExpectancy:normaliseProjectionSetting(savedSettings.retirementLifeExpectancy,90,20,110), retirementOtherMonthlyIncome:normaliseProjectionSetting(savedSettings.retirementOtherMonthlyIncome,0,0,10000000), retirementMonthlyContribution:savedSettings.retirementMonthlyContribution == null ? null : normaliseProjectionSetting(savedSettings.retirementMonthlyContribution,0,0,10000000), retirementAnnualReturnRate:normaliseProjectionSetting(savedSettings.retirementAnnualReturnRate,6,0,20), retirementInflationRate:normaliseProjectionSetting(savedSettings.retirementInflationRate,2,0,10), retirementWithdrawalRate:hasSaleWithdrawalSetting?normaliseProjectionSetting(savedSettings.retirementWithdrawalRate,0,0,10):0, retirementSaleWithdrawalRateVersion:1, trendTooltipEventLimit:normaliseTrendTooltipEventLimit(savedSettings.trendTooltipEventLimit), lastSuccessfulMarketSyncDate:savedSettings.lastSuccessfulMarketSyncDate || null, lastMarketSyncAttemptDate:savedSettings.lastMarketSyncAttemptDate || null, marketAutoSyncPausedUntil:savedSettings.marketAutoSyncPausedUntil || null }; }
     const starterItems = budgetItems.filter(item => item.isStarter === true);
     if (starterItems.length) { await budgetItemRepository.removeMany(starterItems.map(item=>item.id)); budgetItems=budgetItems.filter(item=>item.isStarter!==true); }
     const normalisedItems = normalisedBudgetItems();
     const currentById = new Map(budgetItems.map(item => [item.id, item]));
-    const changedItems = normalisedItems.filter(item => Number(currentById.get(item.id)?.sortOrder) !== item.sortOrder);
+    const changedItems = normalisedItems.filter(item => Number(currentById.get(item.id)?.sortOrder) !== item.sortOrder || currentById.get(item.id)?.amountBaseMonth !== item.amountBaseMonth);
     if (changedItems.length) await budgetItemRepository.saveMany(changedItems);
     budgetItems = normalisedItems;
     const plan = budgetPlans[0];
@@ -903,6 +1067,11 @@ function quantityAt(symbol, date) { return quantityAtDate(transactions, symbol, 
 function dividendReceipts() { return calculateDividendReceipts({ transactions, marketCaches, dateBasis:settings.dividendDateBasis }); }
 function stockDividendCheck() { return calculateStockDividendChecks(transactions, marketCaches); }
 function dividendSummary() { return summarizeDividends(dividendReceipts(), transactions, new Date(), today()); }
+function dividendForecast() {
+  const forecast=calculateProjectedAnnualDividends({ transactions, marketCaches, asOfDate:today() });
+  const assets=metrics().market;
+  return { ...forecast, yield:assets>0 ? forecast.annual/assets : 0 };
+}
 function isUpcomingDividend(row) { return (row.paymentDate || row.basis) > today(); }
 function metrics() { const div=dividendSummary(); return { ...calculatePortfolioMetrics(grouped(), lastPrice, div.rows), div }; }
 function card(label, value, hint, accent='', showInfo=true) { return `<article class="metric ${accent}"><p>${label}${showInfo ? `<button class="info" title="${hint}">i</button>` : ''}</p><strong>${value}</strong><small>${hint}</small></article>`; }
@@ -1013,9 +1182,17 @@ async function seedBudgetPlan() {
 }
 function budgetPlan() { return budgetPlans[0] || null; }
 function annualBudget(item) { return calculateAnnualBudget(item); }
-function budgetSummary() { return calculateBudgetSummary(budgetPlan(), budgetItems); }
+function currentYearMonth() { return today().slice(0,7); }
+function currentAnnualBudget(item) { return calculateBudgetSummaryAt({selectedTarget:'NEEDS_AND_WANTS',bufferRateBps:0},[{...item,isActive:true}],{inflationRate:Number(settings.retirementInflationRate)/100,asOfMonth:currentYearMonth(),fallbackBaseMonth:currentYearMonth()}).targetAnnual; }
+function budgetSummary(asOfMonth = currentYearMonth()) { return calculateBudgetSummaryAt(budgetPlan(), budgetItems, { inflationRate:Number(settings.retirementInflationRate)/100, asOfMonth, fallbackBaseMonth:currentYearMonth() }); }
 function currentMonthlyTarget() { return budgetSummary().targetMonthly; }
 function currentTargetLabel() { return '退休規劃明細'; }
+function normaliseProjectionSetting(value, fallback, minimum, maximum) { const number=Number(value);return Number.isFinite(number)?Math.max(minimum,Math.min(maximum,number)):fallback; }
+function inferredMonthlyContribution(referenceDate = today()) {
+  const cutoff=shiftDate(referenceDate,-365);
+  return transactions.filter(row=>row.date>cutoff&&row.date<=referenceDate&&['MANUAL_BUY','RECURRING_INVESTMENT'].includes(row.acquisitionType)).reduce((sum,row)=>sum+cost(row),0)/12;
+}
+function projectionMonthlyContribution() { return settings.retirementMonthlyContribution == null ? inferredMonthlyContribution() : Number(settings.retirementMonthlyContribution); }
 function budgetFrequencyOptions(selected) { return Object.entries(BUDGET_FREQUENCIES).map(([key,label]) => `<option value="${key}" ${key===selected?'selected':''}>${label}</option>`).join(''); }
 function budgetCategoryOptions(selected) { return Object.entries(BUDGET_CATEGORIES).map(([key,label]) => `<option value="${key}" ${key===selected?'selected':''}>${label}</option>`).join(''); }
 function orderedBudgetItems(items=budgetItems) {
@@ -1026,18 +1203,18 @@ function orderedBudgetItems(items=budgetItems) {
     return aBucket-bBucket || aOrder-bOrder || a.index-b.index;
   }).map(row=>row.item);
 }
-function normalisedBudgetItems(items=budgetItems) { const positions={NEED:0,WANT:0}; return orderedBudgetItems(items).map(item=>{const bucket=item.bucket==='NEED'?'NEED':'WANT',sortOrder=positions[bucket]++;return {...item,bucket,sortOrder};}); }
+function normalisedBudgetItems(items=budgetItems) { const positions={NEED:0,WANT:0}; return orderedBudgetItems(items).map(item=>{const bucket=item.bucket==='NEED'?'NEED':'WANT',sortOrder=positions[bucket]++,timestampMonth=String(item.updatedAt||item.createdAt||'').slice(0,7),amountBaseMonth=isYearMonth(item.amountBaseMonth)?item.amountBaseMonth:isYearMonth(timestampMonth)?timestampMonth:currentYearMonth();return {...item,bucket,sortOrder,amountBaseMonth};}); }
 function budgetItemCard(item, index, total) {
-  const annual=annualBudget(item), monthly=annual/12, bucket=item.bucket==='NEED'?'基本需要':'品質想要';
+  const annual=currentAnnualBudget(item), monthly=annual/12, bucket=item.bucket==='NEED'?'基本需要':'品質想要';
   const cadence=item.calculationMode==='REPLACEMENT' ? `每 ${item.replacementCycleYears} 年汰換` : item.frequency==='EVERY_N_MONTHS' ? `每 ${item.intervalCount} 個月` : item.frequency==='EVERY_N_YEARS' ? `每 ${item.intervalCount} 年` : BUDGET_FREQUENCIES[item.frequency];
   const safeId=escapeHtml(item.id), safeBucket=escapeHtml(item.bucket);
-  return `<article class="budget-item ${item.isActive===false?'is-inactive':''}"><div class="budget-item-copy"><div><span class="budget-bucket ${item.bucket==='NEED'?'need':'want'}">${bucket}</span><span class="budget-category">${BUDGET_CATEGORIES[item.category] || '其他'}</span></div><b>${escapeHtml(item.name)}</b><small>${fmt(item.occurrenceAmount)}／${cadence}${item.note ? ` · ${escapeHtml(item.note)}` : ''}</small></div><div class="budget-item-values"><span>每月需求</span><strong>${fmt(monthly)}</strong><small>年 ${fmt(annual)}</small></div><div class="budget-item-actions"><button class="icon-order" aria-label="將${escapeHtml(item.name)}上移" title="上移" data-budget-move="up" data-budget-id="${safeId}" data-budget-bucket="${safeBucket}" ${index===0?'disabled':''}>↑</button><button class="icon-order" aria-label="將${escapeHtml(item.name)}下移" title="下移" data-budget-move="down" data-budget-id="${safeId}" data-budget-bucket="${safeBucket}" ${index===total-1?'disabled':''}>↓</button><button class="text-button" data-budget-edit="${safeId}">編輯</button><button class="text-button" data-budget-toggle="${safeId}">${item.isActive===false?'啟用':'停用'}</button><button class="icon-danger" aria-label="刪除${escapeHtml(item.name)}" title="刪除" data-budget-delete="${safeId}">×</button></div></article>`;
+  return `<article class="budget-item ${item.isActive===false?'is-inactive':''}"><div class="budget-item-copy"><div><span class="budget-bucket ${item.bucket==='NEED'?'need':'want'}">${bucket}</span><span class="budget-category">${BUDGET_CATEGORIES[item.category] || '其他'}</span></div><b>${escapeHtml(item.name)}</b><small>${fmt(item.occurrenceAmount)}／${cadence}${item.note ? ` · ${escapeHtml(item.note)}` : ''}</small><small class="budget-price-basis">${escapeHtml(item.amountBaseMonth || currentYearMonth())} 幣值</small></div><div class="budget-item-values"><span>每月需求</span><strong>${fmt(monthly)}</strong><small>年 ${fmt(annual)}</small></div><div class="budget-item-actions"><button class="icon-order" aria-label="將${escapeHtml(item.name)}上移" title="上移" data-budget-move="up" data-budget-id="${safeId}" data-budget-bucket="${safeBucket}" ${index===0?'disabled':''}>↑</button><button class="icon-order" aria-label="將${escapeHtml(item.name)}下移" title="下移" data-budget-move="down" data-budget-id="${safeId}" data-budget-bucket="${safeBucket}" ${index===total-1?'disabled':''}>↓</button><button class="text-button" data-budget-edit="${safeId}">編輯</button><button class="text-button" data-budget-toggle="${safeId}">${item.isActive===false?'啟用':'停用'}</button><button class="icon-danger" aria-label="刪除${escapeHtml(item.name)}" title="刪除" data-budget-delete="${safeId}">×</button></div></article>`;
 }
 function budgetEditor() {
   const existing=budgetItems.find(item => item.id===budgetEditId);
-  const item=existing || budgetDraft || { bucket:'NEED', category:'FOOD', name:'', calculationMode:'RECURRING', occurrenceAmount:'', frequency:'MONTHLY', intervalCount:'1', replacementCycleYears:'4', note:'' };
+  const item=existing || budgetDraft || { bucket:'NEED', category:'FOOD', name:'', calculationMode:'RECURRING', occurrenceAmount:'', frequency:'MONTHLY', intervalCount:'1', replacementCycleYears:'4', amountBaseMonth:currentYearMonth(), note:'' };
   const isReplacement=item.calculationMode==='REPLACEMENT';
-  return `<section class="panel budget-editor" aria-labelledby="budget-editor-title"><div class="panel-title"><div><p class="eyebrow">${existing?'編輯項目':'新增項目'}</p><h2 id="budget-editor-title">${existing ? escapeHtml(existing.name) : '新增一筆生活開銷'}</h2><p>只要回答「花多少、多久一次」，系統就會換算為退休時每月要準備的金額。</p></div><button class="secondary" type="button" id="cancelBudgetEdit">取消</button></div><form id="budgetItemForm" novalidate><div id="budgetErrorSummary" class="budget-error-summary" role="alert" tabindex="-1" hidden><b>請修正以下欄位</b><ul></ul></div><section class="budget-form-section"><div class="budget-section-heading"><span>1</span><div><h3>這筆支出是什麼？</h3><p>先選分類與名稱，方便你之後整理預算。</p></div></div><div class="budget-form-grid budget-basic-grid"><label>生活層級<select name="bucket"><option value="NEED" ${item.bucket==='NEED'?'selected':''}>基本需要</option><option value="WANT" ${item.bucket==='WANT'?'selected':''}>品質想要</option></select><small>基本需要是日常必要；品質想要是娛樂、旅遊與興趣。</small></label><label>分類<select id="budgetCategory" name="category">${budgetCategoryOptions(item.category)}</select></label><label class="budget-name-field">項目名稱<input id="budgetName" name="name" maxlength="40" value="${escapeHtml(item.name)}" placeholder="例如：每月餐費、手機、房租" aria-describedby="budgetName-error" required /><small id="budgetName-error" class="field-error"></small></label></div></section><section class="budget-form-section"><div class="budget-section-heading"><span>2</span><div><h3>這筆錢怎麼發生？</h3><p>選一種最接近的情況；另一種的欄位會自動隱藏。</p></div></div><div class="budget-mode-options" role="radiogroup" aria-label="支出類型"><label class="budget-mode-card ${!isReplacement?'selected':''}"><input id="budgetModeRecurring" type="radio" name="calculationMode" value="RECURRING" ${!isReplacement?'checked':''}/><span><b>固定／定期支出</b><small>例如餐費、房租、保險、旅遊</small></span></label><label class="budget-mode-card ${isReplacement?'selected':''}"><input id="budgetModeReplacement" type="radio" name="calculationMode" value="REPLACEMENT" ${isReplacement?'checked':''}/><span><b>多年才換一次</b><small>例如手機、電腦、家電、家具</small></span></label></div><div id="budgetRecurringFields" class="budget-mode-fields" ${isReplacement?'hidden':''}><p class="budget-mode-explanation">例如：房租每月 10,000 元，退休後每月就要準備 10,000 元。</p><div class="budget-form-grid budget-calculation-grid"><label><span id="budgetAmountLabel">每次花費（TWD）</span><input id="budgetAmount" name="occurrenceAmount" inputmode="numeric" type="number" min="0" step="1" value="${escapeHtml(item.occurrenceAmount)}" placeholder="例如：10000" aria-describedby="budgetAmount-error budgetAmount-hint" required /><small id="budgetAmount-hint">填一次實際會花多少錢。</small><small id="budgetAmount-error" class="field-error"></small></label><label id="budgetFrequencyField">多久花一次？<select id="budgetFrequency" name="frequency">${budgetFrequencyOptions(item.frequency)}</select><small>系統會自動換算成每月平均。</small></label><label id="budgetIntervalField" ${!['EVERY_N_MONTHS','EVERY_N_YEARS'].includes(item.frequency)?'hidden':''}>間隔數量<input id="budgetInterval" name="intervalCount" type="number" min="1" max="120" step="1" value="${escapeHtml(item.intervalCount)}" /><small>例如每 3 個月一次。</small></label></div></div><div id="budgetReplacementFields" class="budget-mode-fields" ${!isReplacement?'hidden':''}><p class="budget-mode-explanation">例如：筆電 48,000 元、每 4 年換一次；系統會建議每月預留 1,000 元。</p><div class="budget-form-grid budget-calculation-grid"><label><span id="budgetReplacementAmountLabel">預計更換金額（TWD）</span><input id="budgetReplacementAmount" inputmode="numeric" type="number" min="0" step="1" value="${escapeHtml(item.occurrenceAmount)}" placeholder="例如：48000" aria-describedby="budgetAmount-error budgetAmount-hint" required /><small>含配件或你預期的總成本。</small></label><label>預計幾年換一次？<input id="budgetReplacementCycle" name="replacementCycleYears" type="number" min="1" max="50" step="0.1" value="${escapeHtml(item.replacementCycleYears)}" aria-describedby="budgetReplacementCycle-error" /><small>例如手機 3 年、筆電 4 年。</small><small id="budgetReplacementCycle-error" class="field-error"></small></label></div></div></section><section class="budget-form-section budget-optional"><div class="budget-section-heading"><span>3</span><div><h3>需要補充嗎？<em>選填</em></h3><p>想記錄品牌、用途或其他說明時再填。</p></div></div><label class="budget-note">備註<input name="note" maxlength="120" value="${escapeHtml(item.note)}" placeholder="例如：包含保固與配件" /></label></section><div id="replacementSuggestion" class="replacement-suggestion" hidden><b>看起來像耐用品。</b><span>手機、電腦與家電通常不是每年購買，可以改成汰換準備。</span><button type="button" class="text-button" id="useReplacementMode">改用多年汰換</button></div><div class="budget-preview" aria-live="polite"><div><span>換算後會加進退休目標</span><strong id="budgetPreview">每年 0 元 · 每月 0 元</strong></div><small id="budgetPreviewHint">填完金額與週期，就能看到系統如何換算。</small></div><div class="budget-editor-actions"><button class="primary" type="submit">${existing?'儲存修改':'新增項目'}</button></div></form></section>`;
+  return `<section class="panel budget-editor" aria-labelledby="budget-editor-title"><div class="panel-title"><div><p class="eyebrow">${existing?'編輯項目':'新增項目'}</p><h2 id="budget-editor-title">${existing ? escapeHtml(existing.name) : '新增一筆生活開銷'}</h2><p>只要回答「花多少、多久一次」，系統就會換算為退休時每月要準備的金額。</p></div><button class="secondary" type="button" id="cancelBudgetEdit">取消</button></div><form id="budgetItemForm" novalidate><div id="budgetErrorSummary" class="budget-error-summary" role="alert" tabindex="-1" hidden><b>請修正以下欄位</b><ul></ul></div><section class="budget-form-section"><div class="budget-section-heading"><span>1</span><div><h3>這筆支出是什麼？</h3><p>先選分類與名稱，方便你之後整理預算。</p></div></div><div class="budget-form-grid budget-basic-grid"><label>生活層級<select name="bucket"><option value="NEED" ${item.bucket==='NEED'?'selected':''}>基本需要</option><option value="WANT" ${item.bucket==='WANT'?'selected':''}>品質想要</option></select><small>基本需要是日常必要；品質想要是娛樂、旅遊與興趣。</small></label><label>分類<select id="budgetCategory" name="category">${budgetCategoryOptions(item.category)}</select></label><label class="budget-name-field">項目名稱<input id="budgetName" name="name" maxlength="40" value="${escapeHtml(item.name)}" placeholder="例如：每月餐費、手機、房租" aria-describedby="budgetName-error" required /><small id="budgetName-error" class="field-error"></small></label></div></section><section class="budget-form-section"><div class="budget-section-heading"><span>2</span><div><h3>這筆錢怎麼發生？</h3><p>選一種最接近的情況；另一種的欄位會自動隱藏。</p></div></div><div class="budget-mode-options" role="radiogroup" aria-label="支出類型"><label class="budget-mode-card ${!isReplacement?'selected':''}"><input id="budgetModeRecurring" type="radio" name="calculationMode" value="RECURRING" ${!isReplacement?'checked':''}/><span><b>固定／定期支出</b><small>例如餐費、房租、保險、旅遊</small></span></label><label class="budget-mode-card ${isReplacement?'selected':''}"><input id="budgetModeReplacement" type="radio" name="calculationMode" value="REPLACEMENT" ${isReplacement?'checked':''}/><span><b>多年才換一次</b><small>例如手機、電腦、家電、家具</small></span></label></div><div id="budgetRecurringFields" class="budget-mode-fields" ${isReplacement?'hidden':''}><p class="budget-mode-explanation">例如：房租每月 10,000 元，退休後每月就要準備 10,000 元。</p><div class="budget-form-grid budget-calculation-grid"><label><span id="budgetAmountLabel">每次花費（TWD）</span><input id="budgetAmount" name="occurrenceAmount" inputmode="numeric" type="number" min="0" step="1" value="${escapeHtml(item.occurrenceAmount)}" placeholder="例如：10000" aria-describedby="budgetAmount-error budgetAmount-hint" required /><small id="budgetAmount-hint">填一次實際會花多少錢。</small><small id="budgetAmount-error" class="field-error"></small></label><label id="budgetFrequencyField">多久花一次？<select id="budgetFrequency" name="frequency">${budgetFrequencyOptions(item.frequency)}</select><small>系統會自動換算成每月平均。</small></label><label id="budgetIntervalField" ${!['EVERY_N_MONTHS','EVERY_N_YEARS'].includes(item.frequency)?'hidden':''}>間隔數量<input id="budgetInterval" name="intervalCount" type="number" min="1" max="120" step="1" value="${escapeHtml(item.intervalCount)}" /><small>例如每 3 個月一次。</small></label><label>金額基準月<input id="budgetAmountBaseMonth" name="amountBaseMonth" type="month" value="${escapeHtml(item.amountBaseMonth || currentYearMonth())}" max="${currentYearMonth()}" required /><small>系統從這個月份開始計算通膨；修改金額時會更新為本月。</small><small id="budgetAmountBaseMonth-error" class="field-error"></small></label></div></div><div id="budgetReplacementFields" class="budget-mode-fields" ${!isReplacement?'hidden':''}><p class="budget-mode-explanation">例如：筆電 48,000 元、每 4 年換一次；系統會建議每月預留 1,000 元。</p><div class="budget-form-grid budget-calculation-grid"><label><span id="budgetReplacementAmountLabel">預計更換金額（TWD）</span><input id="budgetReplacementAmount" inputmode="numeric" type="number" min="0" step="1" value="${escapeHtml(item.occurrenceAmount)}" placeholder="例如：48000" aria-describedby="budgetAmount-error budgetAmount-hint" required /><small>含配件或你預期的總成本。</small></label><label>預計幾年換一次？<input id="budgetReplacementCycle" name="replacementCycleYears" type="number" min="1" max="50" step="0.1" value="${escapeHtml(item.replacementCycleYears)}" aria-describedby="budgetReplacementCycle-error" /><small>例如手機 3 年、筆電 4 年。</small><small id="budgetReplacementCycle-error" class="field-error"></small></label><label>金額基準月<input id="budgetReplacementBaseMonth" type="month" value="${escapeHtml(item.amountBaseMonth || currentYearMonth())}" max="${currentYearMonth()}" required /><small>系統從這個月份開始計算通膨。</small></label></div></div></section><section class="budget-form-section budget-optional"><div class="budget-section-heading"><span>3</span><div><h3>需要補充嗎？<em>選填</em></h3><p>想記錄品牌、用途或其他說明時再填。</p></div></div><label class="budget-note">備註<input name="note" maxlength="120" value="${escapeHtml(item.note)}" placeholder="例如：包含保固與配件" /></label></section><div id="replacementSuggestion" class="replacement-suggestion" hidden><b>看起來像耐用品。</b><span>手機、電腦與家電通常不是每年購買，可以改成汰換準備。</span><button type="button" class="text-button" id="useReplacementMode">改用多年汰換</button></div><div class="budget-preview" aria-live="polite"><div><span>換算後會加進退休目標</span><strong id="budgetPreview">每年 0 元 · 每月 0 元</strong></div><small id="budgetPreviewHint">填完金額與週期，就能看到系統如何換算。</small></div><div class="budget-editor-actions"><button class="primary" type="submit">${existing?'儲存修改':'新增項目'}</button></div></form></section>`;
 }
 function budgetEmptyState() { return `<section class="panel budget-empty"><p class="eyebrow">從日常開始</p><h2>不必先猜每月要多少</h2><p>先填固定支出，再補年度與多年一次的汰換費用；系統會轉成退休月現金流目標。</p><div class="budget-steps"><span>1. 每月固定支出</span><span>2. 年度支出</span><span>3. 多年汰換準備</span></div><button class="primary" id="startBudget">從基本需要開始</button><div class="budget-suggestions"><b>常被漏掉的項目</b>${BUDGET_SUGGESTIONS.map((item,index)=>`<button class="suggestion" data-budget-suggestion="${index}">${item.name}<span>＋</span></button>`).join('')}</div></section>`; }
 function stepBannerIcon(kind) {
@@ -1071,15 +1248,16 @@ function livingBudgetPage() {
   const summary=budgetSummary(), plan=summary.plan, ordered=orderedBudgetItems(), needs=ordered.filter(item=>item.bucket==='NEED'), wants=ordered.filter(item=>item.bucket==='WANT');
   const hasItems=budgetItems.length>0;
   const undo=budgetUndoItem ? `<section class="budget-undo" role="status">已刪除「${escapeHtml(budgetUndoItem.name)}」<button id="undoBudgetDelete">復原</button></section>` : '';
-  const listSection=(bucket,title,items)=>{const active=items.filter(item=>item.isActive!==false), monthly=active.reduce((sum,item)=>sum+annualBudget(item)/12,0), rows=items.map((item,index)=>budgetItemCard(item,index,items.length)).join('') || `<p class="budget-filter-empty">尚未有${title}項目。</p>`;return `<section class="budget-list-section" aria-labelledby="budget-list-${bucket}"><div class="budget-list-section-heading"><div><h3 id="budget-list-${bucket}">${title}</h3><p>${items.length} 項${active.length ? ` · 目前每月 ${fmt(monthly)}` : ''}</p></div><span>${bucket==='NEED'?'必要生活開支':'讓退休生活更有餘裕'}</span></div><div class="budget-items">${rows}</div></section>`;};
+  const listSection=(bucket,title,items)=>{const active=items.filter(item=>item.isActive!==false), monthly=active.reduce((sum,item)=>sum+currentAnnualBudget(item)/12,0), rows=items.map((item,index)=>budgetItemCard(item,index,items.length)).join('') || `<p class="budget-filter-empty">尚未有${title}項目。</p>`;return `<section class="budget-list-section" aria-labelledby="budget-list-${bucket}"><div class="budget-list-section-heading"><div><h3 id="budget-list-${bucket}">${title}</h3><p>${items.length} 項${active.length ? ` · 目前每月 ${fmt(monthly)}` : ''}</p></div><span>${bucket==='NEED'?'必要生活開支':'讓退休生活更有餘裕'}</span></div><div class="budget-items">${rows}</div></section>`;};
   const list = `<section class="panel budget-list"><div class="panel-title"><div><p class="eyebrow">明細</p><h2>生活支出項目</h2><p>基本需要與品質想要各自排序；可用上下箭頭把相關項目排在一起，順序會保留在本機。</p></div><div class="budget-list-actions"><button class="primary budget-add-button" type="button" id="addBudgetItem" aria-expanded="${budgetEditorOpen}">＋ 新增項目</button></div></div><div class="budget-column-head" aria-hidden="true"><span>層級、分類與項目</span><span>每月需求／年預算</span><span>操作</span></div>${listSection('NEED','基本需要',needs)}${listSection('WANT','品質想要',wants)}</section>`;
-  return `<section class="budget-page">${contextualStepBanner('budget')}<section class="budget-hero"><div><p class="eyebrow">退休規劃</p><h2>我的退休生活預算</h2><p>先從最固定的生活支出開始，再逐步補上保險、醫療與耐用品汰換費用。</p></div></section>${undo}<section class="budget-summary-grid"><article><span>基本需要</span><strong>${fmt(summary.needsAnnual/12)}</strong><small>年 ${fmt(summary.needsAnnual)}</small></article><article><span>品質想要</span><strong>${fmt(summary.wantsAnnual/12)}</strong><small>年 ${fmt(summary.wantsAnnual)}</small></article><article><span>安全緩衝</span><strong>${plan?.bufferRateBps/100 || 0}%</strong><small>每月 ${fmt(summary.bufferAnnual/12)}</small></article><article class="budget-total"><span>退休月現金流目標</span><strong>${fmt(summary.targetMonthly)}</strong><small>${currentTargetLabel()}</small></article></section>${hasItems ? `${list}${budgetEditorOpen ? budgetEditor() : ''}` : `${budgetEmptyState()}${budgetEditorOpen ? budgetEditor() : ''}`}</section>`;
+  return `<section class="budget-page">${contextualStepBanner('budget')}<section class="budget-hero"><div><p class="eyebrow">退休規劃</p><h2>我的退休生活預算</h2><p>先從最固定的生活支出開始，再逐步補上保險、醫療與耐用品汰換費用。</p></div></section>${undo}<section class="budget-summary-grid"><article><span>基本需要</span><strong>${fmt(summary.needsAnnual/12)}</strong><small>本月幣值 · 年 ${fmt(summary.needsAnnual)}</small></article><article><span>品質想要</span><strong>${fmt(summary.wantsAnnual/12)}</strong><small>本月幣值 · 年 ${fmt(summary.wantsAnnual)}</small></article><article><span>安全緩衝</span><strong>${plan?.bufferRateBps/100 || 0}%</strong><small>每月 ${fmt(summary.bufferAnnual/12)}</small></article><article class="budget-total"><span>目前月現金流目標</span><strong>${fmt(summary.targetMonthly)}</strong><small>依金額基準月與通膨率換算</small></article></section>${hasItems ? `${list}${budgetEditorOpen ? budgetEditor() : ''}` : `${budgetEmptyState()}${budgetEditorOpen ? budgetEditor() : ''}`}</section>`;
 }
 function navIcon(id) {
   const paths={
     overview:'<path d="M3 12h7V3H3v9Zm11 9h7v-9h-7v9ZM3 21h7v-5H3v5Zm11-13h7V3h-7v5Z"/>',
     dividends:'<path d="M4 19V9m5 10V5m5 14v-7m5 7V3"/><path d="M2 21h20"/>',
     budget:'<path d="M4 5h16v14H4z"/><path d="M8 9h8M8 13h5M16.5 16.5l1.5 1.5 3-3"/>',
+    'retirement-calculator':'<path d="M4 19V5h16v14H4Z"/><path d="m7 15 3-3 2 2 5-6"/><path d="M14 8h3v3"/>',
     transactions:'<path d="M4 6h16M4 12h16M4 18h16"/><circle cx="7" cy="6" r="1"/><circle cx="15" cy="12" r="1"/><circle cx="10" cy="18" r="1"/>',
     'market-data':'<path d="M4 4h16v16H4zM4 9h16M9 4v16"/>',
     settings:'<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2.8 2.8-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6v.2h-4V21a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1L4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9A1.7 1.7 0 0 0 3 14H2.8v-4H3a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9L4.2 7 7 4.2l.1.1A1.7 1.7 0 0 0 9 4.6 1.7 1.7 0 0 0 10 3v-.2h4V3a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1L19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.2v4H21a1.7 1.7 0 0 0-1.6 1Z"/>'
@@ -1112,12 +1290,12 @@ function render() {
   Object.assign(settings, normaliseTrendEventMarkerSettings(settings));
   const m = page === 'overview' ? metrics() : null;
   const onboarding = getOnboardingState();
-  root.innerHTML = `<div class="shell"><aside><div class="sidebar-heading"><a class="brand" href="#overview"><span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 18 18 5M9 5h9v9"/></svg></span><b>存股退休</b><em>STOCK JOURNEY</em></a><button class="mobile-menu-toggle" type="button" aria-label="開啟菜單" aria-controls="mobileNavigationPanel" aria-expanded="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg></button></div><div class="mobile-nav-panel" id="mobileNavigationPanel"><div class="mobile-nav-heading"><div><b>頁面導覽</b><span>目前：${PAGE_LABELS[page]}</span></div><button class="mobile-nav-close" type="button" aria-label="關閉菜單"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button></div><nav aria-label="主要導覽">${Object.entries(PAGE_LABELS).map(([id,name])=>`<button data-page="${id}" class="${page===id?'active':''}" ${page===id?'aria-current="page"':''}><i>${navIcon(id)}</i><span>${name}</span>${navBadge(id, onboarding)}</button>`).join('')}</nav><div class="privacy"><span aria-hidden="true"></span><b>資料只留在這台裝置</b><a href="#settings" data-page="settings">備份與設定</a></div></div><button class="mobile-nav-backdrop" type="button" aria-label="關閉菜單" aria-hidden="true" tabindex="-1"></button></aside><main id="main-content" tabindex="-1">${header()}${page === 'overview' ? blueDashboardOverview(m) : page === 'budget' ? livingBudgetPage() : page === 'transactions' ? transactionsPage() : page === 'market-data' ? marketDataPage() : page === 'settings' ? settingsPage() : dividendsPage()}</main></div>${transactionModal()}${aiImportGuide()}<div id="toast" role="status" aria-live="polite"></div>`;
+  root.innerHTML = `<div class="shell"><aside><div class="sidebar-heading"><a class="brand" href="#overview"><span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 18 18 5M9 5h9v9"/></svg></span><b>存股退休</b><em>STOCK JOURNEY</em></a><button class="mobile-menu-toggle" type="button" aria-label="開啟菜單" aria-controls="mobileNavigationPanel" aria-expanded="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg></button></div><div class="mobile-nav-panel" id="mobileNavigationPanel"><div class="mobile-nav-heading"><div><b>頁面導覽</b><span>目前：${PAGE_LABELS[page]}</span></div><button class="mobile-nav-close" type="button" aria-label="關閉菜單"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button></div><nav aria-label="主要導覽">${Object.entries(PAGE_LABELS).map(([id,name])=>`<button data-page="${id}" class="${page===id?'active':''}" ${page===id?'aria-current="page"':''}><i>${navIcon(id)}</i><span>${name}</span>${navBadge(id, onboarding)}</button>`).join('')}</nav><div class="privacy"><span aria-hidden="true"></span><b>資料只留在這台裝置</b><a href="#settings" data-page="settings">備份與設定</a></div></div><button class="mobile-nav-backdrop" type="button" aria-label="關閉菜單" aria-hidden="true" tabindex="-1"></button></aside><main id="main-content" tabindex="-1">${header()}${page === 'overview' ? blueDashboardOverview(m) : page === 'budget' ? livingBudgetPage() : page === 'retirement-calculator' ? retirementCalculatorPage() : page === 'transactions' ? transactionsPage() : page === 'market-data' ? marketDataPage() : page === 'settings' ? settingsPage() : dividendsPage()}</main></div>${transactionModal()}${aiImportGuide()}<div id="toast" role="status" aria-live="polite"></div>`;
   bind();
 }
 function header() {
   const marketSummary=marketSyncSummary();
-  const subtitle=page==='budget' ? '從生活支出建立退休月現金流目標。' : page==='transactions' ? '管理交易紀錄，系統會自動計算持股與成本。' : page==='settings' ? '退休目標、顯示方式與資料管理。' : `市場資料：${marketHeaderLabel(marketSummary)}`;
+  const subtitle=page==='budget' ? '從生活支出建立退休月現金流目標。' : page==='retirement-calculator' ? '結合持股、生活預算與投入計畫，推算退休時間。' : page==='transactions' ? '管理交易紀錄，系統會自動計算持股與成本。' : page==='settings' ? '退休目標、顯示方式與資料管理。' : `市場資料：${marketHeaderLabel(marketSummary)}`;
   const action='';
   return `<header><div><p class="eyebrow">存股退休</p><h1>${PAGE_LABELS[page]}</h1><p class="market-as-of" role="status" aria-live="polite" aria-atomic="true">${subtitle}</p></div><div class="header-actions">${action}</div></header>`;
 }
@@ -1162,6 +1340,67 @@ function blueDashboardOverview(m) {
   const onboarding=getOnboardingState(), journey=overviewJourneyCard(onboarding);
   if (!onboarding.budgetDone && !onboarding.holdingsDone) return `${journey}${onboardingPreview()}`;
   return `${journey}<section class="blue-goal-card ${goalReached?'is-reached':'is-progress'} ${hasGoal?'':'is-unset'}"><div class="blue-goal-main"><p class="eyebrow">退休生活費覆蓋率</p><div class="blue-goal-value"><strong>${coverage==null?'尚無資料':`${coverage.toFixed(1)}%`}</strong><span>股息目前可支付幾成退休生活費 · ${averageLabel}</span></div><div class="blue-progress" role="progressbar" aria-label="退休生活費覆蓋率" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.min(coverage||0,100).toFixed(0)}"><i style="width:${Math.min(coverage||0,100)}%"></i></div><p>平均月股息 <b>${fmt(avg)}</b><span>／</span>退休月現金流目標 <b>${hasGoal?fmt(target):'尚未設定'}</b></p><small class="goal-source">${currentTargetLabel()} <button data-page="budget">查看明細</button></small></div><div class="blue-goal-gap">${goalAside}</div></section><section class="blue-kpis"><article><span>${marketValueLabel}</span><strong>${fmt(m.market)}</strong><small class="market-change ${marketChange == null ? '' : marketChange>=0?'positive':'negative'}">${marketChangeLabel}</small><small>${marketValueHint}</small></article><article><span>${currentYear} 年已入帳股息</span><strong>${fmt(paidThisYear)}</strong><small>不包含尚未發放項目</small></article><article><span>${currentYear} 年預計再入帳</span><strong>${fmt(upcomingThisYear)}</strong><small>已公告、尚未發放</small></article></section>${transactions.length?`<section class="panel asset-trend-panel"><div class="panel-title trend-heading"><div><p class="eyebrow">資產軌跡</p><h2>資產走勢</h2></div></div><div id="trendChartMount">${trendChart()}</div></section>`:emptyState()}`;
+}
+function projectionInput(overrides = {}) {
+  const m=metrics();
+  const forecast=dividendForecast();
+  return {
+    currentMonth:currentYearMonth(),
+    birthMonth:settings.retirementBirthMonth || inferBirthMonth(settings.retirementCurrentAge,currentYearMonth()),
+    currentAge:settings.retirementCurrentAge,
+    autoRetirementAge:true,
+    currentAssets:m.market,
+    annualDividendIncome:forecast.annual,
+    dividendYield:forecast.yield,
+    currentMonthlyExpense:currentMonthlyTarget(),
+    budgetPlan:budgetPlan(),
+    budgetItems,
+    otherMonthlyIncome:settings.retirementOtherMonthlyIncome,
+    monthlyContribution:projectionMonthlyContribution(),
+    annualReturnRate:Number(settings.retirementAnnualReturnRate)/100,
+    inflationRate:Number(settings.retirementInflationRate)/100,
+    withdrawalRate:Number(settings.retirementWithdrawalRate)/100,
+    ...overrides,
+  };
+}
+function projectionYearMonthLabel(value) { const [year,month]=String(value||'').split('-');return year&&month?`${year} 年 ${Number(month)} 月`:'—'; }
+function projectionLinePath(rows, key, maximum, totalCount=rows.length, width=1000, height=250) {
+  const left=70,right=24,top=18,bottom=42,plotWidth=width-left-right,plotHeight=height-top-bottom;
+  return rows.map((row,index)=>`${index?'L':'M'}${(left+index*plotWidth/Math.max(1,totalCount-1)).toFixed(1)},${(top+plotHeight-Number(row[key])/maximum*plotHeight).toFixed(1)}`).join(' ');
+}
+function projectionTooltip(row, projection) {
+  if (!row) return '';
+  const retired=row.phase==='retirement',starting=row.phase==='retirement-start',phase=retired?'退休生活':starting?'開始退休':'累積資產';
+  const values=retired
+    ? [['當年預估股息',fmt(row.annualDividend)],['賣股提領',fmt(row.fundedWithdrawal)],['實際提領率',row.actualWithdrawalRate?`${(row.actualWithdrawalRate*100).toFixed(1)}%`:'0%'],['未支應缺口',fmt(row.shortfall)]]
+    : starting
+      ? [['退休起點資產',fmt(row.assets)],['預估年股息',fmt(row.assets*projection.dividendYield)],['賣股提領上限',fmt(row.assets*projection.withdrawalRate)],['退休所需資產',row.targetAssets==null?'—':fmt(row.targetAssets)]]
+      : [['當年投入',fmt(row.annualContribution)],['當年月生活費估算',fmt(row.monthlyExpense)],['當年退休目標',fmt(row.targetAssets)]];
+  return `<b>${row.year} 年 · ${row.age} 歲</b><strong>預估資產 ${fmt(row.assets)}</strong><small>${phase}</small><div>${values.map(([label,value])=>`<span>${label}<em>${value}</em></span>`).join('')}</div>`;
+}
+function projectionChart(projection) {
+  const rows=projection.series,targetRows=rows.filter(row=>row.targetAssets!=null),maximum=Math.max(1,...rows.map(row=>row.assets),...targetRows.map(row=>row.targetAssets))*1.08;
+  const assetPath=projectionLinePath(rows,'assets',maximum),targetPath=projectionLinePath(targetRows,'targetAssets',maximum,rows.length),retirementIndex=projection.targetAge==null?-1:rows.findIndex(row=>row.age===projection.targetAge),retirementX=retirementIndex<0?null:70+retirementIndex*906/Math.max(1,rows.length-1),initialRow=rows[0];
+  const tickRows=rows.map((row,index)=>({row,index})).filter(({row,index})=>index===0||row.age===100||row.age%10===0);
+  const ticks=tickRows.map(({row,index})=>{const x=70+index*906/Math.max(1,rows.length-1),anchor=index===0?'start':row.age===100?'end':'middle';return `<text x="${x.toFixed(1)}" y="238" text-anchor="${anchor}">${row.age} 歲</text>`;}).join('');
+  const retirementRow=retirementIndex<0?null:rows[retirementIndex],retirementY=retirementRow==null?null:18+190-Number(retirementRow.assets)/maximum*190;
+  const retirementMarkup=retirementX==null?'':`<line class="projection-retirement-line" x1="${retirementX.toFixed(1)}" x2="${retirementX.toFixed(1)}" y1="43" y2="208"/><g class="projection-retirement-label" transform="translate(${retirementX.toFixed(1)},18)"><rect x="-25" y="-11" width="50" height="22" rx="11"/><text text-anchor="middle" y="4">可退休</text></g><circle class="projection-retirement-dot" cx="${retirementX.toFixed(1)}" cy="${retirementY.toFixed(1)}" r="5"/>`;
+  const retirementLegend=retirementX==null?'':'<span><i class="retirement"></i>開始退休</span>';
+  const aria=projection.targetAge==null?`${projection.currentAge} 歲至 100 歲的資產推估，目前條件尚未找到可退休年齡`:`${projection.currentAge} 歲至 100 歲的資產推估，預估最早可在 ${projection.targetAge} 歲退休`;
+  return `<div class="projection-chart-head"><div><h2>退休前後資產變化</h2><p>移動到圖表任一位置可查看最接近的年度；固定推演至 100 歲。</p></div><div class="projection-legend" aria-label="圖例"><span><i></i>預估資產</span><span><i class="target"></i>退休目標</span>${retirementLegend}</div></div><div class="projection-chart-stage" id="projectionRetirementChart" tabindex="0" aria-label="${aria}"><svg class="projection-chart-svg" viewBox="0 0 1000 250" aria-hidden="true"><g class="projection-grid"><line x1="70" x2="976" y1="18" y2="18"/><line x1="70" x2="976" y1="81" y2="81"/><line x1="70" x2="976" y1="145" y2="145"/><line x1="70" x2="976" y1="208" y2="208"/></g>${retirementMarkup}<path class="projection-target-line" d="${targetPath}"/><path class="projection-asset-line" d="${assetPath}"/><g class="projection-chart-focus" id="projectionChartFocus"><line class="projection-crosshair" x1="70" x2="70" y1="18" y2="208"/><circle class="projection-focus-dot" cx="70" cy="208" r="5"/></g><g class="projection-axis">${ticks}<text x="62" y="22" text-anchor="end">${compact(maximum)}</text><text x="62" y="212" text-anchor="end">0</text></g></svg><div class="projection-tooltip" id="projectionTooltip" role="status">${projectionTooltip(initialRow,projection)}</div></div>`;
+}
+function retirementProjectionResult(projection) {
+  if (!projection.currentMonthlyExpense) return `<section class="panel projection-needs-data"><p class="eyebrow">還差一項資料</p><h2>先建立退休生活預算</h2><p>完成至少一筆生活支出後，才能計算通膨後生活費、退休目標資產與達標年齡。</p><button class="primary" type="button" data-page="budget">前往退休規劃</button></section>`;
+  const found=projection.targetAge!=null,retireNow=projection.targetAge===projection.currentAge,status=retireNow?'現在可退休':found?`預估 ${projection.targetAge-projection.currentAge} 年後`:'需要調整條件';
+  const headline=retireNow?'現在已具備退休條件':found?`${projection.targetAge} 歲`:'100 歲前尚未達標';
+  const summary=found?`依目前資產、每月投入、報酬與通膨假設，從 ${projection.targetAge} 歲開始退休，逐年提領生活費後可支應到 100 歲，預估剩餘 ${fmt(projection.assetsAtLifeExpectancy)}。`:'依目前條件推演到 100 歲，尚未同時滿足設定提領率與退休後資產不中途耗盡；可提高每月投入、降低生活費或調整進階假設。';
+  return `<section class="projection-results" aria-live="polite"><article class="projection-hero ${found?'is-on-time':'is-behind'}"><div><p>系統推算的最早可退休年齡</p><strong>${headline}</strong></div><span>${status}</span><div class="projection-progress-label"><small>股息優先支付生活費</small><small>固定推演至 100 歲</small></div></article><section class="projection-kpis"><article><span>最早退休年月</span><strong>${found?projectionYearMonthLabel(projection.retirementMonth):'—'}</strong><small>${found?'由出生年月與最早退休年齡換算':'目前條件尚未找到可退休年月'}</small></article><article><span>退休時預估年股息</span><strong>${found?fmt(projection.projectedAssets*projection.dividendYield):'—'}</strong><small>以目前持股近 12 個月配息推估</small></article><article><span>賣股提領率上限</span><strong>${(projection.withdrawalRate*100).toFixed(1)}%</strong><small>預設 0%；僅在股息與其他收入不足時使用</small></article><article class="${found?'':'projection-risk'}"><span>100 歲預估剩餘資產</span><strong>${found?fmt(projection.assetsAtLifeExpectancy):'未達標'}</strong><small>已扣除股息不足時的賣股提領</small></article></section><section class="panel projection-chart-panel">${projectionChart(projection)}</section><section class="projection-summary ${found?'is-on-time':'is-behind'}"><i aria-hidden="true">${found?'✓':'!'}</i><div><b>${found?'試算可支應到 100 歲':'100 歲前尚未找到可退休年齡'}</b><span>${summary}</span></div></section></section>`;
+}
+function retirementCalculatorPage() {
+  const currentAssets=metrics().market,currentExpense=currentMonthlyTarget(),monthlyContribution=projectionMonthlyContribution(),forecast=dividendForecast(),projection=calculateRetirementProjection(projectionInput());
+  const assetSource=transactions.length?'依持股市值即時計算；缺少價格時以成本估算。':'尚未有持股資料，目前以 0 元試算。';
+  const contributionSource=settings.retirementMonthlyContribution==null?'依最近 12 個月自行買進與定期定額平均。':'使用你儲存的投入計畫。';
+  return `<section class="projection-page"><section class="projection-source-grid"><article><span>目前可投資資產</span><strong>${fmt(currentAssets)}</strong><small>${assetSource}</small><button type="button" data-page="transactions">查看持股與交易</button></article><article><span>近 12 個月預估年股息</span><strong>${forecast.annual?fmt(forecast.annual):'尚無資料'}</strong><small>${forecast.annual?`依目前持股換算，殖利率約 ${(forecast.yield*100).toFixed(1)}%。`:'同步配息資料後會自動納入試算。'}</small><button type="button" data-page="dividends">查看股息現金流</button></article><article><span>目前月生活費目標</span><strong>${currentExpense?fmt(currentExpense):'尚未設定'}</strong><small>依各項生活費的金額基準月換算為本月幣值。</small><button type="button" data-page="budget">查看退休規劃</button></article></section><div class="projection-layout"><form id="retirementProjectionForm" class="panel projection-form" novalidate><div class="panel-title"><div><p class="eyebrow">我的退休計畫</p><h2>調整試算條件</h2><p>直接修改即可，結果與設定都會自動更新。</p></div></div><div class="projection-auto-rule"><b>股息優先，自動推算最早退休年齡</b><span>先用目前持股的配息推估支付生活費；不足時才依賣股提領率補足，並固定模擬到 100 歲。</span></div><div id="projectionFormError" class="budget-error-summary" role="alert" tabindex="-1" hidden></div><div class="projection-form-grid"><label class="wide">出生年月<input name="birthMonth" type="month" min="1900-01" max="${currentYearMonth()}" value="${projection.birthMonth}" required aria-describedby="birthMonthHint"><small id="birthMonthHint">目前為 ${projection.currentAge} 歲；系統會自動更新年齡。</small></label><label class="wide">退休當時其他月收入<input name="otherMonthlyIncome" type="number" min="0" max="10000000" step="1000" value="${projection.otherMonthlyIncome}" required><small>例如年金或租金；視為退休當年的固定金額，之後不自動隨通膨增加。</small></label><label class="wide">預計每月投入<input name="monthlyContribution" type="number" min="0" max="10000000" step="1000" value="${monthlyContribution.toFixed(0)}" required><small>${contributionSource}</small>${settings.retirementMonthlyContribution!=null?'<button class="text-button projection-use-auto" type="button" id="useInferredContribution">改用近 12 個月平均</button>':''}</label></div><details class="projection-assumptions"><summary>進階假設</summary><div class="projection-form-grid"><label>預期年化總報酬率<input name="annualReturnRate" type="number" min="0" max="20" step="0.1" value="${settings.retirementAnnualReturnRate}" required><small>包含配息；系統會扣除預估股息後，作為股價成長推估，避免重複計算。</small></label><label>預期年通膨率<input name="inflationRate" type="number" min="0" max="10" step="0.1" value="${settings.retirementInflationRate}" required><small>依每筆生活費的金額基準月逐年換算。</small></label><label class="wide">賣股提領率上限<input name="withdrawalRate" type="number" min="0" max="10" step="0.1" value="${settings.retirementWithdrawalRate}" required><small>預設 0%；股息與其他收入不足時，最多可賣出資產的多少比例補足生活費。</small></label></div></details><p class="projection-auto-save" id="projectionSaveStatus" role="status">修改後會自動儲存</p></form><div id="retirementProjectionResult">${retirementProjectionResult(projection)}</div></div><p class="projection-disclaimer">股息以目前持股近 12 個月已知配息推估；本試算固定推演到 100 歲，未計入稅費及市場波動，結果僅供規劃參考。</p></section>`;
 }
 function trendDailySeries() {
   if (!transactions.length) return [];
@@ -1362,10 +1601,10 @@ function transactionsPage() {
 function transactionModal() {
   if (!transactionModalOpen) return '';
   const transaction=transactions.find(row=>row.id===transactionEditId),isEditing=Boolean(transaction),selectedType=transaction?.acquisitionType||'MANUAL_BUY';
-  return `<div class="modal-backdrop" id="transactionModalBackdrop"><section class="transaction-modal" role="dialog" aria-modal="true" aria-labelledby="transactionModalTitle"><div class="modal-header"><div><p class="eyebrow">${isEditing?'編輯紀錄':'手動新增'}</p><h2 id="transactionModalTitle">${isEditing?'編輯交易紀錄':'新增交易紀錄'}</h2></div><button class="modal-close" id="closeTransactionModal" aria-label="關閉">×</button></div><form id="transactionForm" novalidate><div class="form-error" id="transactionFormError" role="alert" tabindex="-1" hidden></div><div class="transaction-form-grid"><label>交易日期<input id="transactionDate" name="date" type="date" value="${escapeHtml(transaction?.date||today())}" required /></label><div class="transaction-field stock-combobox-field"><label for="transactionSymbol">股票代號或名稱</label><div class="stock-combobox"><input id="transactionSymbol" name="symbol" type="text" autocomplete="off" placeholder="例如：0050 或 元大台灣50" maxlength="30" value="${escapeHtml(transaction?.symbol||'')}" role="combobox" aria-autocomplete="list" aria-controls="transactionStockSuggestions" aria-expanded="false" aria-describedby="transactionStockHelp" required autofocus /><div class="stock-suggestions" id="transactionStockSuggestions" role="listbox" aria-label="符合的台灣股票" hidden></div></div><small id="transactionStockHelp" class="field-help">可輸入中文名稱或股票代號搜尋。</small></div><label>取得方式<select name="acquisitionType" id="transactionType">${Object.entries(ACQUISITIONS).map(([key,label])=>`<option value="${key}" ${key===selectedType?'selected':''}>${label}</option>`).join('')}</select></label><label>股數<input id="transactionQuantity" name="quantity" type="number" min="0.0001" step="any" placeholder="例如：1000" value="${transaction?.quantity??''}" required /></label><label>成交價（元／股）<input name="price" id="transactionPrice" type="number" min="0" step="any" placeholder="例如：20.50" value="${transaction?.price??''}" required /></label><label>手續費（元）<input id="transactionFee" name="fee" type="number" min="0" step="any" value="${transaction?.fee??0}" required /></label></div><div class="transaction-cost-preview" role="status" aria-live="polite" aria-atomic="true"><div><span>預估總成本</span><strong id="transactionCostPreview">請填寫股數與成交價</strong></div><small id="transactionCostFormula">股數 × 成交價 ＋ 手續費</small></div><div class="modal-actions"><button type="button" class="secondary" id="cancelTransaction">取消</button><button type="submit" class="primary" id="saveTransaction">${isEditing?'儲存變更':'儲存交易'}</button></div></form></section></div>`;
+  return `<div class="modal-backdrop" id="transactionModalBackdrop"><section class="transaction-modal" role="dialog" aria-modal="true" aria-labelledby="transactionModalTitle"><div class="modal-header"><div><p class="eyebrow">${isEditing?'編輯紀錄':'手動新增'}</p><h2 id="transactionModalTitle">${isEditing?'編輯交易紀錄':'新增交易紀錄'}</h2></div><button class="modal-close" id="closeTransactionModal" aria-label="關閉">×</button></div><form id="transactionForm" novalidate><div class="form-error" id="transactionFormError" role="alert" tabindex="-1" hidden></div><div class="transaction-form-grid"><label>交易日期<input id="transactionDate" name="date" type="date" value="${escapeHtml(transaction?.date||today())}" required /></label><div class="transaction-field stock-combobox-field"><label for="transactionSymbol">股票代號或名稱</label><div class="stock-combobox"><input id="transactionSymbol" name="symbol" type="text" autocomplete="off" placeholder="例如：0050 或 元大台灣50" maxlength="30" value="${escapeHtml(transaction?.symbol||'')}" role="combobox" aria-autocomplete="list" aria-controls="transactionStockSuggestions" aria-expanded="false" aria-describedby="transactionStockHelp" required autofocus /><div class="stock-suggestions" id="transactionStockSuggestions" role="listbox" aria-label="符合的台灣股票" hidden></div></div><small id="transactionStockHelp" class="field-help">可輸入中文名稱或股票代號搜尋。</small></div><label>取得方式<select name="acquisitionType" id="transactionType">${Object.entries(ACQUISITIONS).map(([key,label])=>`<option value="${key}" ${key===selectedType?'selected':''}>${label}</option>`).join('')}</select></label><label>股數<input id="transactionQuantity" name="quantity" type="number" min="1" step="1" placeholder="例如：1000" value="${transaction?.quantity??''}" required /></label><label>成交價（元／股）<input name="price" id="transactionPrice" type="number" min="0" step="any" placeholder="例如：20.50" value="${transaction?.price??''}" required /></label><label>手續費（元）<input id="transactionFee" name="fee" type="number" min="0" step="any" value="${transaction?.fee??0}" required /></label></div><div class="transaction-cost-preview" role="status" aria-live="polite" aria-atomic="true"><div><span>預估總成本</span><strong id="transactionCostPreview">請填寫至少 1 股的股數與成交價</strong></div><small id="transactionCostFormula">股數 × 成交價 ＋ 手續費</small></div><div class="modal-actions"><button type="button" class="secondary" id="cancelTransaction">取消</button><button type="submit" class="primary" id="saveTransaction">${isEditing?'儲存變更':'儲存交易'}</button></div></form></section></div>`;
 }
 function aiImportPrompt() {
-  return `請將我提供的台灣股票交易資料整理為可匯入的 CSV。\n\n請只輸出 CSV 純文字，不要 Markdown、說明或程式碼區塊。第一列欄位必須完全是：\ndate,acquisition_type,symbol,quantity,price,fee\n\n整理規則：\n1. 日期使用 YYYY-MM-DD；原始資料缺少完整日期時，不要猜測。\n2. acquisition_type 只能使用：MANUAL_BUY、RECURRING_INVESTMENT、DIVIDEND_REINVESTMENT、STOCK_DIVIDEND。\n3. 只保留買進、定期定額、股息再投入與配股；賣出、轉出、借券等不支援紀錄請排除。\n4. symbol 保留台股股票代號，例如 00878、2330，不要轉成數字格式或補小數點。\n5. quantity 為正數股數；price 是每股成交價。配股（STOCK_DIVIDEND）的 price 留空。\n6. fee 為手續費；原始資料沒有時填 0。\n7. 無法確認欄位時不要臆測，該筆紀錄請排除。\n\n以下是我的原始資料：\n`;
+  return `請將我提供的台灣股票交易資料整理為可匯入的 CSV。\n\n請只輸出 CSV 純文字，不要 Markdown、說明或程式碼區塊。第一列欄位必須完全是：\ndate,acquisition_type,symbol,quantity,price,fee\n\n整理規則：\n1. 日期使用 YYYY-MM-DD；原始資料缺少完整日期時，不要猜測。\n2. acquisition_type 只能使用：MANUAL_BUY、RECURRING_INVESTMENT、DIVIDEND_REINVESTMENT、STOCK_DIVIDEND。\n3. 只保留買進、定期定額、股息再投入與配股；賣出、轉出、借券等不支援紀錄請排除。\n4. symbol 保留台股股票代號，例如 00878、2330，不要轉成數字格式或補小數點。\n5. quantity 為至少 1 股的整數；price 是每股成交價。配股（STOCK_DIVIDEND）的 price 留空。\n6. fee 為手續費；原始資料沒有時填 0。\n7. 無法確認欄位時不要臆測，該筆紀錄請排除。\n\n以下是我的原始資料：\n`;
 }
 function aiImportGuide() {
   if (!aiImportGuideOpen) return '';
@@ -1476,7 +1715,8 @@ function chartSettingsPanel() {
 }
 function budgetItemFromForm(form) {
   const data=new FormData(form), mode=String(data.get('calculationMode')), amount=mode==='REPLACEMENT' ? form.querySelector('#budgetReplacementAmount')?.value : data.get('occurrenceAmount');
-  return { bucket:String(data.get('bucket')), category:String(data.get('category')), name:String(data.get('name')||'').trim(), calculationMode:mode, occurrenceAmount:String(amount||''), frequency:String(data.get('frequency')||'MONTHLY'), intervalCount:String(data.get('intervalCount')||'1'), replacementCycleYears:String(data.get('replacementCycleYears')||'4'), note:String(data.get('note')||'').trim() };
+  const baseMonth=mode==='REPLACEMENT' ? form.querySelector('#budgetReplacementBaseMonth')?.value : data.get('amountBaseMonth');
+  return { bucket:String(data.get('bucket')), category:String(data.get('category')), name:String(data.get('name')||'').trim(), calculationMode:mode, occurrenceAmount:String(amount||''), frequency:String(data.get('frequency')||'MONTHLY'), intervalCount:String(data.get('intervalCount')||'1'), replacementCycleYears:String(data.get('replacementCycleYears')||'4'), amountBaseMonth:String(baseMonth||''), note:String(data.get('note')||'').trim() };
 }
 function showBudgetErrors(form, errors) {
   form.querySelectorAll('.field-error').forEach(el=>el.textContent=''); form.querySelectorAll('[aria-invalid]').forEach(el=>el.removeAttribute('aria-invalid'));
@@ -1489,6 +1729,7 @@ function validateBudgetItem(item) {
   if (item.occurrenceAmount === '' || !(Number(item.occurrenceAmount) >= 0)) errors.push({field:item.calculationMode==='REPLACEMENT'?'budgetReplacementAmount':'budgetAmount',message:'請填寫 0 元以上的金額。'});
   if (item.calculationMode==='REPLACEMENT' && !(Number(item.replacementCycleYears)>=1 && Number(item.replacementCycleYears)<=50)) errors.push({field:'budgetReplacementCycle',message:'汰換週期請填寫 1 到 50 年。'});
   if (item.calculationMode==='RECURRING' && ['EVERY_N_MONTHS','EVERY_N_YEARS'].includes(item.frequency) && !(Number(item.intervalCount)>=1 && Number(item.intervalCount)<=120)) errors.push({field:'budgetInterval',message:'間隔請填寫 1 到 120。'});
+  if (!isYearMonth(item.amountBaseMonth) || item.amountBaseMonth>currentYearMonth()) errors.push({field:item.calculationMode==='REPLACEMENT'?'budgetReplacementBaseMonth':'budgetAmountBaseMonth',message:'金額基準月不能晚於本月。'});
   return errors;
 }
 function mirrorBudgetAmount(source) {
@@ -1498,6 +1739,7 @@ function mirrorBudgetAmount(source) {
   else replacement.value=recurring.value;
   updateBudgetPreview();
 }
+function mirrorBudgetBaseMonth(source) { const recurring=document.querySelector('#budgetAmountBaseMonth'),replacement=document.querySelector('#budgetReplacementBaseMonth');if(!recurring||!replacement)return;if(source==='replacement')recurring.value=replacement.value;else replacement.value=recurring.value; }
 function updateBudgetPreview() {
   const form=document.querySelector('#budgetItemForm'); if(!form) return; const item=budgetItemFromForm(form), annual=annualBudget(item), preview=document.querySelector('#budgetPreview'); if(preview)preview.textContent=`每年 ${fmt(annual)} · 每月 ${fmt(annual/12)}`;
   const mode=item.calculationMode==='REPLACEMENT', frequencyField=document.querySelector('#budgetFrequencyField'), intervalField=document.querySelector('#budgetIntervalField'), recurringFields=document.querySelector('#budgetRecurringFields'), replacementFields=document.querySelector('#budgetReplacementFields'), customMonths=item.frequency==='EVERY_N_MONTHS', customYears=item.frequency==='EVERY_N_YEARS';
@@ -1506,13 +1748,13 @@ function updateBudgetPreview() {
   document.querySelectorAll('.budget-mode-card').forEach(card=>card.classList.toggle('selected',card.querySelector('input')?.checked));
   const prompt=document.querySelector('#replacementSuggestion'), name=item.name, isDurable=item.category==='REPLACEMENT'||/(手機|平板|電腦|筆電|螢幕|家電|家具|車|裝修)/.test(name); if(prompt)prompt.hidden=mode||!isDurable;
 }
-async function saveBudgetItem(event) { event.preventDefault(); const form=event.currentTarget,item=budgetItemFromForm(form),errors=validateBudgetItem(item); if(errors.length){showBudgetErrors(form,errors);return;} const now=new Date().toISOString(), existing=budgetItems.find(row=>row.id===budgetEditId), sortOrder=existing?.bucket===item.bucket ? existing.sortOrder : budgetItems.filter(row=>row.bucket===item.bucket).length, record={...existing,...item,id:existing?.id||uid(),planId:budgetPlan()?.id||'default',isActive:existing?.isActive??true,sortOrder,createdAt:existing?.createdAt||now,updatedAt:now}; await budgetItemRepository.save(record); budgetEditId=null; budgetDraft=null; budgetEditorOpen=false; const onboardingCompleted=await load({ announceOnboardingCompletion:true }); if(!onboardingCompleted)toast(existing?'已儲存預算項目':'已新增預算項目'); }
+async function saveBudgetItem(event) { event.preventDefault(); const form=event.currentTarget,item=budgetItemFromForm(form),errors=validateBudgetItem(item); if(errors.length){showBudgetErrors(form,errors);return;} const now=new Date().toISOString(), existing=budgetItems.find(row=>row.id===budgetEditId), pricingChanged=existing&&['occurrenceAmount','calculationMode','frequency','intervalCount','replacementCycleYears'].some(key=>String(existing[key]??'')!==String(item[key]??'')), amountBaseMonth=pricingChanged&&item.amountBaseMonth===existing.amountBaseMonth?currentYearMonth():item.amountBaseMonth, sortOrder=existing?.bucket===item.bucket ? existing.sortOrder : budgetItems.filter(row=>row.bucket===item.bucket).length, record={...existing,...item,amountBaseMonth,id:existing?.id||uid(),planId:budgetPlan()?.id||'default',isActive:existing?.isActive??true,sortOrder,createdAt:existing?.createdAt||now,updatedAt:now}; await budgetItemRepository.save(record); budgetEditId=null; budgetDraft=null; budgetEditorOpen=false; const onboardingCompleted=await load({ announceOnboardingCompletion:true }); if(!onboardingCompleted)toast(existing?'已儲存預算項目':'已新增預算項目'); }
 async function setBudgetBuffer(rate) { const plan=budgetPlan(); if(!plan)return; const normalized=Math.max(0,Math.min(50,Number(rate)||0)); const next={...plan,bufferRateBps:Math.round(normalized*100),updatedAt:new Date().toISOString()};await budgetPlanRepository.save(next);budgetPlans=[next];render(); }
 async function setBudgetTargetMode(mode) { const plan=budgetPlan();if(!plan)return;const next={...plan,selectedTarget:mode,updatedAt:new Date().toISOString()};await budgetPlanRepository.save(next);budgetPlans=[next];render(); }
 function focusBudgetEditor() { requestAnimationFrame(()=>document.querySelector('#budgetName')?.focus()); }
 function openBudgetEditor(draft=null) { budgetEditId=null; budgetDraft=draft; budgetEditorOpen=true; render(); focusBudgetEditor(); }
 function closeBudgetEditor() { budgetEditId=null; budgetDraft=null; budgetEditorOpen=false; render(); }
-function addBudgetSuggestion(index) { const suggestion=BUDGET_SUGGESTIONS[index];if(!suggestion)return;openBudgetEditor({bucket:'NEED',category:suggestion.category,name:suggestion.name,calculationMode:suggestion.category==='REPLACEMENT'?'REPLACEMENT':'RECURRING',occurrenceAmount:'',frequency:'ANNUAL',intervalCount:'1',replacementCycleYears:'4',note:''}); }
+function addBudgetSuggestion(index) { const suggestion=BUDGET_SUGGESTIONS[index];if(!suggestion)return;openBudgetEditor({bucket:'NEED',category:suggestion.category,name:suggestion.name,calculationMode:suggestion.category==='REPLACEMENT'?'REPLACEMENT':'RECURRING',occurrenceAmount:'',frequency:'ANNUAL',intervalCount:'1',replacementCycleYears:'4',amountBaseMonth:currentYearMonth(),note:''}); }
 async function deleteBudgetItem(id) {
   const item = budgetItems.find(row => row.id === id);
   if (!item || !await confirmDestructive({
@@ -1562,7 +1804,7 @@ function bindBudgetPage() {
   document.querySelector('#startBudget')?.addEventListener('click',startBudgetItem);
   document.querySelector('#addBudgetItem')?.addEventListener('click',()=>openBudgetEditor());
   document.querySelectorAll('[data-budget-suggestion]').forEach(button=>button.addEventListener('click',()=>addBudgetSuggestion(Number(button.dataset.budgetSuggestion))));
-  document.querySelector('#budgetItemForm')?.addEventListener('submit',saveBudgetItem); document.querySelectorAll('input[name="calculationMode"]').forEach(input=>input.addEventListener('change',updateBudgetPreview));document.querySelector('#budgetFrequency')?.addEventListener('change',updateBudgetPreview);document.querySelector('#budgetCategory')?.addEventListener('change',updateBudgetPreview);document.querySelector('#budgetName')?.addEventListener('input',updateBudgetPreview);document.querySelector('#budgetAmount')?.addEventListener('input',()=>mirrorBudgetAmount('recurring'));document.querySelector('#budgetReplacementAmount')?.addEventListener('input',()=>mirrorBudgetAmount('replacement'));document.querySelector('#budgetInterval')?.addEventListener('input',updateBudgetPreview);document.querySelector('#budgetReplacementCycle')?.addEventListener('input',updateBudgetPreview);document.querySelector('#useReplacementMode')?.addEventListener('click',()=>{document.querySelector('#budgetModeReplacement').checked=true;updateBudgetPreview();});
+  document.querySelector('#budgetItemForm')?.addEventListener('submit',saveBudgetItem); document.querySelectorAll('input[name="calculationMode"]').forEach(input=>input.addEventListener('change',updateBudgetPreview));document.querySelector('#budgetFrequency')?.addEventListener('change',updateBudgetPreview);document.querySelector('#budgetCategory')?.addEventListener('change',updateBudgetPreview);document.querySelector('#budgetName')?.addEventListener('input',updateBudgetPreview);document.querySelector('#budgetAmount')?.addEventListener('input',()=>mirrorBudgetAmount('recurring'));document.querySelector('#budgetReplacementAmount')?.addEventListener('input',()=>mirrorBudgetAmount('replacement'));document.querySelector('#budgetAmountBaseMonth')?.addEventListener('input',()=>mirrorBudgetBaseMonth('recurring'));document.querySelector('#budgetReplacementBaseMonth')?.addEventListener('input',()=>mirrorBudgetBaseMonth('replacement'));document.querySelector('#budgetInterval')?.addEventListener('input',updateBudgetPreview);document.querySelector('#budgetReplacementCycle')?.addEventListener('input',updateBudgetPreview);document.querySelector('#useReplacementMode')?.addEventListener('click',()=>{document.querySelector('#budgetModeReplacement').checked=true;updateBudgetPreview();});
   updateBudgetPreview(); document.querySelector('#cancelBudgetEdit')?.addEventListener('click',closeBudgetEditor);document.querySelectorAll('[data-budget-edit]').forEach(button=>button.addEventListener('click',()=>{budgetEditId=button.dataset.budgetEdit;budgetDraft=null;budgetEditorOpen=true;render();focusBudgetEditor();}));document.querySelectorAll('[data-budget-toggle]').forEach(button=>button.addEventListener('click',async()=>{const item=budgetItems.find(row=>row.id===button.dataset.budgetToggle);if(!item)return;await budgetItemRepository.save({...item,isActive:item.isActive===false,updatedAt:new Date().toISOString()});await load();}));document.querySelectorAll('[data-budget-move]').forEach(button=>button.addEventListener('click',()=>moveBudgetItem(button.dataset.budgetId,button.dataset.budgetMove,button.dataset.budgetBucket)));document.querySelectorAll('[data-budget-delete]').forEach(button=>button.addEventListener('click',()=>deleteBudgetItem(button.dataset.budgetDelete)));document.querySelector('#undoBudgetDelete')?.addEventListener('click',restoreBudgetItem);
 }
 function bindMobileNavigation() {
@@ -1595,6 +1837,103 @@ function bindMobileNavigation() {
     else if(!event.shiftKey&&document.activeElement===last){event.preventDefault();first?.focus();}
   });
 }
+function projectionValuesFromForm(form) {
+  const data=new FormData(form);
+  return {
+    birthMonth:String(data.get('birthMonth')||''),
+    currentAge:ageAtYearMonth(String(data.get('birthMonth')||''),currentYearMonth()),
+    autoRetirementAge:true,
+    otherMonthlyIncome:Number(data.get('otherMonthlyIncome')),
+    monthlyContribution:Number(data.get('monthlyContribution')),
+    annualReturnRate:Number(data.get('annualReturnRate'))/100,
+    inflationRate:Number(data.get('inflationRate'))/100,
+    withdrawalRate:Number(data.get('withdrawalRate'))/100,
+  };
+}
+function validateProjectionValues(values) {
+  if (!isYearMonth(values.birthMonth) || !(Number.isFinite(values.currentAge)&&values.currentAge>=18&&values.currentAge<=79)) return {field:'birthMonth',message:'出生年月需對應目前 18 到 79 歲。'};
+  if (!(Number.isFinite(values.otherMonthlyIncome)&&values.otherMonthlyIncome>=0)) return {field:'otherMonthlyIncome',message:'其他月收入不能小於 0。'};
+  if (!(Number.isFinite(values.monthlyContribution)&&values.monthlyContribution>=0)) return {field:'monthlyContribution',message:'每月投入不能小於 0。'};
+  if (!(values.annualReturnRate>=0&&values.annualReturnRate<=0.2)) return {field:'annualReturnRate',message:'年化總報酬率請填寫 0% 到 20%。'};
+  if (!(values.inflationRate>=0&&values.inflationRate<=0.1)) return {field:'inflationRate',message:'年通膨率請填寫 0% 到 10%。'};
+  if (!(values.withdrawalRate>=0&&values.withdrawalRate<=0.1)) return {field:'withdrawalRate',message:'賣股提領率請填寫 0% 到 10%。'};
+  return null;
+}
+function bindProjectionChart(projection, scope=document) {
+  const stage=scope.querySelector('#projectionRetirementChart'),focus=scope.querySelector('#projectionChartFocus'),tooltip=scope.querySelector('#projectionTooltip');if(!stage||!focus||!tooltip)return;
+  const maximum=Math.max(1,...projection.series.map(row=>row.assets),...projection.series.map(row=>row.targetAssets||0))*1.08;
+  const choose=index=>{const safe=Math.max(0,Math.min(projection.series.length-1,Number(index)||0)),row=projection.series[safe],x=70+safe*906/Math.max(1,projection.series.length-1),y=18+190-Number(row.assets)/maximum*190;tooltip.innerHTML=projectionTooltip(row,projection);tooltip.style.left=`${x/10}%`;tooltip.classList.toggle('is-right',x>620);focus.querySelector('line')?.setAttribute('x1',x.toFixed(1));focus.querySelector('line')?.setAttribute('x2',x.toFixed(1));focus.querySelector('circle')?.setAttribute('cx',x.toFixed(1));focus.querySelector('circle')?.setAttribute('cy',y.toFixed(1));focus.classList.add('is-visible');tooltip.classList.add('is-visible');stage.dataset.activeIndex=String(safe);};
+  const indexAtClientX=clientX=>{const rect=stage.getBoundingClientRect(),viewX=(clientX-rect.left)/Math.max(1,rect.width)*1000;return Math.round((viewX-70)/906*Math.max(1,projection.series.length-1));};
+  stage.addEventListener('pointermove',event=>choose(indexAtClientX(event.clientX)));
+  stage.addEventListener('pointerdown',event=>choose(indexAtClientX(event.clientX)));
+  stage.addEventListener('pointerleave',()=>{if(matchMedia('(hover: hover)').matches){focus.classList.remove('is-visible');tooltip.classList.remove('is-visible');}});
+  stage.addEventListener('focus',()=>choose(stage.dataset.activeIndex||0));
+  stage.addEventListener('keydown',event=>{const current=Number(stage.dataset.activeIndex)||0;if(event.key==='ArrowLeft'){event.preventDefault();choose(current-1);}else if(event.key==='ArrowRight'){event.preventDefault();choose(current+1);}else if(event.key==='Home'){event.preventDefault();choose(0);}else if(event.key==='End'){event.preventDefault();choose(projection.series.length-1);}});
+  choose(0);
+}
+function addProjectionMethodInfo(form) {
+  if (!form || form.querySelector('.projection-method')) return;
+  const details=document.createElement('details');
+  details.className='projection-method';
+  details.innerHTML='<summary>試算方式與公式</summary><div><section><b>1. 股息推估</b><p>近 12 個月預估年股息 ＝ Σ（目前持有股數 × 近 12 個月每次現金股利）。</p><p>預估殖利率 ＝ 預估年股息 ÷ 目前可投資資產。</p></section><section><b>2. 生活費與賣股</b><p>生活費缺口 ＝ 當年生活費 − 其他年收入 − 當年預估股息。</p><p>賣股提領上限 ＝ 期初資產 × 賣股提領率上限；實際賣股提領取生活費缺口與上限之中較小的數值。</p></section><section><b>3. 資產變化</b><p>股價成長率 ＝ 年化總報酬率 − 預估殖利率，避免把股息重複算進資產。</p><p>年底資產 ＝ 期初資產 ×（1 ＋ 股價成長率）− 實際賣股提領。</p></section></div>';
+  form.querySelector('.projection-auto-save')?.before(details);
+}
+function numberStepperStep(input) {
+  if (input.step !== 'any' && Number(input.step) > 0) return Number(input.step);
+  if (input.id==='transactionPrice') return .01;
+  return 1;
+}
+function addNumberSteppers(scope=document) {
+  scope.querySelectorAll('input[type="number"]').forEach(input=>{
+    if (input.closest('.number-stepper')) return;
+    const label=(input.labels?.[0]?.textContent || input.getAttribute('aria-label') || '數值').replace(/\s+/g,' ').trim();
+    const wrapper=document.createElement('span');
+    wrapper.className='number-stepper';
+    input.before(wrapper);
+    const decrease=document.createElement('button');
+    decrease.type='button';decrease.className='number-stepper-button';decrease.dataset.numberStepDirection='-1';decrease.setAttribute('aria-label',`減少${label}`);decrease.textContent='−';
+    const increase=document.createElement('button');
+    increase.type='button';increase.className='number-stepper-button';increase.dataset.numberStepDirection='1';increase.setAttribute('aria-label',`增加${label}`);increase.textContent='＋';
+    // Keep the input first so its surrounding <label> focuses the field, not the decrease button.
+    wrapper.append(input,decrease,increase);
+    wrapper.addEventListener('click',event=>{
+      const button=event.target.closest('[data-number-step-direction]');
+      if (!button || input.disabled) return;
+      const step=numberStepperStep(input),min=input.min==='' ? -Number.MAX_SAFE_INTEGER : Number(input.min),max=input.max==='' ? Number.MAX_SAFE_INTEGER : Number(input.max),current=Number.isFinite(input.valueAsNumber) ? input.valueAsNumber : 0;
+      const next=Math.max(min,Math.min(max,current+step*Number(button.dataset.numberStepDirection)));
+      input.value=String(Math.round(next*1000000)/1000000);
+      input.dispatchEvent(new Event('input',{bubbles:true}));
+      input.dispatchEvent(new Event('change',{bubbles:true}));
+    });
+  });
+}
+function bindRetirementCalculator() {
+  const form=document.querySelector('#retirementProjectionForm');if(!form)return;
+  addProjectionMethodInfo(form);
+  let saveTimer;
+  const persist=async values=>{
+    const status=document.querySelector('#projectionSaveStatus');
+    settings={...settings,retirementBirthMonth:values.birthMonth,retirementCurrentAge:values.currentAge,retirementOtherMonthlyIncome:values.otherMonthlyIncome,retirementMonthlyContribution:values.monthlyContribution,retirementAnnualReturnRate:values.annualReturnRate*100,retirementInflationRate:values.inflationRate*100,retirementWithdrawalRate:values.withdrawalRate*100,retirementSaleWithdrawalRateVersion:1};
+    await settingsRepository.save(settings);
+    if(status){status.textContent='已自動儲存';setTimeout(()=>{if(status.isConnected)status.textContent='修改後會自動儲存';},1800);}
+  };
+  const update=()=>{
+    const values=projectionValuesFromForm(form),error=validateProjectionValues(values),status=document.querySelector('#projectionSaveStatus'),birthHint=document.querySelector('#birthMonthHint');
+    if(birthHint&&Number.isFinite(values.currentAge))birthHint.textContent=`目前為 ${values.currentAge} 歲；系統會自動更新年齡。`;
+    form.querySelectorAll('input').forEach(input=>{input.removeAttribute('aria-invalid');input.closest('label')?.classList.remove('has-error');});
+    if(error){const field=form.elements[error.field];field?.setAttribute('aria-invalid','true');field?.closest('label')?.classList.add('has-error');clearTimeout(saveTimer);if(status)status.textContent=error.message;return;}
+    const result=document.querySelector('#retirementProjectionResult');
+    const projection=calculateRetirementProjection(projectionInput(values));
+    if(result){result.innerHTML=retirementProjectionResult(projection);bindProjectionChart(projection,result);}
+    result?.querySelectorAll('[data-page]').forEach(button=>button.addEventListener('click',()=>navigateToPage(button.dataset.page)));
+    if(status)status.textContent='正在自動儲存…';
+    clearTimeout(saveTimer);saveTimer=setTimeout(()=>void persist(values),500);
+  };
+  form.addEventListener('input',update);
+  form.addEventListener('submit',event=>{event.preventDefault();update();});
+  document.querySelector('#useInferredContribution')?.addEventListener('click',async()=>{settings={...settings,retirementMonthlyContribution:null};await settingsRepository.save(settings);render();toast('已改用近 12 個月平均投入');});
+  bindProjectionChart(calculateRetirementProjection(projectionInput()),document);
+}
 function bind() {
   bindMobileNavigation();
   document.querySelectorAll('[data-page]').forEach(element => element.onclick = () => navigateToPage(element.dataset.page));
@@ -1610,6 +1949,7 @@ function bind() {
     navigateToPage(button.dataset.stepAction);
   }));
   if (page === 'budget') bindBudgetPage();
+  if (page === 'retirement-calculator') bindRetirementCalculator();
   bindTrendInteractions();
   bindDividendTooltip();
   document.querySelector('#dividendYear')?.addEventListener('change', event => { dividendYear=event.target.value; render(); });
@@ -1674,9 +2014,10 @@ function bind() {
     });
     if(control.type==='number')control.addEventListener('input',scheduleSettingsSave);
   });
+  addNumberSteppers();
   document.querySelector('#backup')?.addEventListener('click', backup); document.querySelector('#restore')?.addEventListener('change', e => restore(e.target.files[0]));
   document.querySelector('#clearMarket')?.addEventListener('click',async()=>{if(await confirmDestructive({title:'清除市場快取？',description:'價格與配息快取會被移除，且不會立刻自動重抓。',details:['交易紀錄與退休規劃不會受到影響。','可稍後手動同步，否則等下一個 18:00 排程更新。'],confirmLabel:'清除快取'})){const pausedUntil=nextMarketBoundary().toISOString();await marketCacheRepository.clear();settings={...settings,lastSuccessfulMarketSyncDate:null,lastMarketSyncAttemptDate:null,marketAutoSyncPausedUntil:pausedUntil};await settingsRepository.save(settings);await load();toast('市場快取已清除；自動重建暫停至下次排程');}});
-  document.querySelector('#clearAll')?.addEventListener('click',async()=>{if(await confirmDestructive({title:'清除全部個人資料？',description:'這會永久刪除目前瀏覽器中的投資與退休規劃資料。',details:['包含交易、退休規劃、設定與市場快取。', '此操作無法復原，建議先匯出備份。'],confirmLabel:'永久清除'})){await replaceBrowserData({});settings={id:'default',monthlyExpenseTarget:0,dividendDateBasis:'PAYMENT_DATE',trendTooltipEventLimit:3,lastSuccessfulMarketSyncDate:null,lastMarketSyncAttemptDate:null,marketAutoSyncPausedUntil:null};budgetPlans=[];budgetItems=[];await load();toast('本機個人資料已清除');}});
+  document.querySelector('#clearAll')?.addEventListener('click',async()=>{if(await confirmDestructive({title:'清除全部個人資料？',description:'這會永久刪除目前瀏覽器中的投資與退休規劃資料。',details:['包含交易、退休規劃、試算設定與市場快取。', '此操作無法復原，建議先匯出備份。'],confirmLabel:'永久清除'})){await replaceBrowserData({});settings={id:'default',monthlyExpenseTarget:0,dividendDateBasis:'PAYMENT_DATE',retirementBirthMonth:null,retirementCurrentAge:40,retirementTargetAge:60,retirementLifeExpectancy:90,retirementOtherMonthlyIncome:0,retirementMonthlyContribution:null,retirementAnnualReturnRate:6,retirementInflationRate:2,retirementWithdrawalRate:0,retirementSaleWithdrawalRateVersion:1,trendTooltipEventLimit:3,lastSuccessfulMarketSyncDate:null,lastMarketSyncAttemptDate:null,marketAutoSyncPausedUntil:null};budgetPlans=[];budgetItems=[];await load();toast('本機個人資料已清除');}});
 }
 function filePicker(accept, cb) { const input=document.createElement('input'); input.type='file'; input.accept=accept; input.onchange=()=>input.files[0]&&cb(input.files[0]); input.click(); }
 async function copyAiImportPrompt() {
@@ -1774,7 +2115,7 @@ function updateTransactionCostPreview() {
   const type=document.querySelector('#transactionType')?.value;
   if(type==='STOCK_DIVIDEND'){output.textContent='0 元';formula.textContent='配股不計入取得成本與手續費';return;}
   const quantity=Number(document.querySelector('#transactionQuantity')?.value),price=Number(document.querySelector('#transactionPrice')?.value),fee=Number(document.querySelector('#transactionFee')?.value||0);
-  if(!(Number.isFinite(quantity)&&quantity>0&&Number.isFinite(price)&&price>0&&Number.isFinite(fee)&&fee>=0)){output.textContent='請填寫股數與成交價';formula.textContent='股數 × 成交價 ＋ 手續費';return;}
+  if(!(Number.isFinite(quantity)&&Number.isInteger(quantity)&&quantity>=1&&Number.isFinite(price)&&price>0&&Number.isFinite(fee)&&fee>=0)){output.textContent='請填寫至少 1 股的整數股數與成交價';formula.textContent='股數 × 成交價 ＋ 手續費';return;}
   output.textContent=fmt(quantity*price+fee);
   formula.textContent=`${money.format(quantity)} 股 × ${fmtPerShare(price)}${fee?` ＋ 手續費 ${fmt(fee)}`:''}`;
 }
@@ -1790,7 +2131,7 @@ async function saveManualTransaction(event) {
   const quantity = Number(data.get('quantity'));
   const price = acquisitionType === 'STOCK_DIVIDEND' ? null : Number(data.get('price'));
   const fee = Number(data.get('fee'));
-  const error = !isIsoCalendarDate(date) ? ['請填寫有效的交易日期。','transactionDate'] : !/^[A-Za-z0-9._-]{1,12}$/.test(symbol) ? ['請從搜尋結果選擇股票，或輸入有效的股票代號。','transactionSymbol'] : !ACQUISITIONS[acquisitionType] ? ['請選擇有效的取得方式。','transactionType'] : !(Number.isFinite(quantity) && quantity > 0) ? ['股數必須是大於 0 的有限數字。','transactionQuantity'] : acquisitionType !== 'STOCK_DIVIDEND' && !(Number.isFinite(price) && price > 0) ? ['成交價必須是大於 0 的有限數字。','transactionPrice'] : !(Number.isFinite(fee) && fee >= 0) ? ['手續費不得小於 0。','transactionFee'] : null;
+  const error = !isIsoCalendarDate(date) ? ['請填寫有效的交易日期。','transactionDate'] : !/^[A-Za-z0-9._-]{1,12}$/.test(symbol) ? ['請從搜尋結果選擇股票，或輸入有效的股票代號。','transactionSymbol'] : !ACQUISITIONS[acquisitionType] ? ['請選擇有效的取得方式。','transactionType'] : !(Number.isFinite(quantity) && Number.isInteger(quantity) && quantity >= 1) ? ['台股股數須為至少 1 股的整數。','transactionQuantity'] : acquisitionType !== 'STOCK_DIVIDEND' && !(Number.isFinite(price) && price > 0) ? ['成交價必須是大於 0 的有限數字。','transactionPrice'] : !(Number.isFinite(fee) && fee >= 0) ? ['手續費不得小於 0。','transactionFee'] : null;
   if (error) return transactionFormError(...error);
   const existing=transactions.find(row=>row.id===transactionEditId),record={ id:existing?.id||uid(), date, symbol, quantity, price, fee, acquisitionType, importBatchId:existing?.importBatchId??null, importFileFingerprint:existing?.importFileFingerprint??null, sourceRowNumber:existing?.sourceRowNumber??null, createdAt:existing?.createdAt||new Date().toISOString() };
   await transactionRepository.save(record);
@@ -1800,14 +2141,14 @@ async function saveManualTransaction(event) {
   if(!onboardingCompleted)toast(`${existing?'已更新':'已新增'} ${symbol} 的交易紀錄`);
 }
 function download(content,name,type) { const a=document.createElement('a'); a.href=URL.createObjectURL(new Blob([content],{type})); a.download=name; a.click(); URL.revokeObjectURL(a.href); }
-function backupSettings() { const { id, dividendDateBasis } = settings; return { id, dividendDateBasis, trendTooltipEventLimit:trendTooltipEventLimit(), showTotalAsset: settings.showTotalAsset ?? true, showTotalReturn: settings.showTotalReturn ?? true, gainMilestoneInterval: gainMilestoneInterval(), ...normaliseTrendEventMarkerSettings(settings) }; }
+function backupSettings() { const { id, dividendDateBasis, retirementBirthMonth, retirementCurrentAge, retirementTargetAge, retirementLifeExpectancy, retirementOtherMonthlyIncome, retirementMonthlyContribution, retirementAnnualReturnRate, retirementInflationRate, retirementWithdrawalRate, retirementSaleWithdrawalRateVersion } = settings; return { id, dividendDateBasis, retirementBirthMonth, retirementCurrentAge, retirementTargetAge, retirementLifeExpectancy, retirementOtherMonthlyIncome, retirementMonthlyContribution, retirementAnnualReturnRate, retirementInflationRate, retirementWithdrawalRate, retirementSaleWithdrawalRateVersion, trendTooltipEventLimit:trendTooltipEventLimit(), showTotalAsset: settings.showTotalAsset ?? true, showTotalReturn: settings.showTotalReturn ?? true, gainMilestoneInterval: gainMilestoneInterval(), ...normaliseTrendEventMarkerSettings(settings) }; }
 function backupTransaction(transaction) { const { id, date, acquisitionType, symbol, quantity, price, fee, importFileFingerprint = null } = transaction; return { id, date, acquisitionType, symbol, quantity, price, fee, importFileFingerprint }; }
 async function backup(){const orderedItems=normalisedBudgetItems();download(JSON.stringify({schemaVersion:BACKUP_SCHEMA_VERSION,exportedAt:new Date().toISOString(),appVersion:APP_VERSION,transactions:transactions.map(backupTransaction),settings:backupSettings(),budgetPlans,budgetItems:orderedItems},null,2),`stock-portfolio-backup-${today()}.json`,'application/json');toast('備份檔已下載');}
 async function restore(file) {
   try {
     const data=validateBackupPayload(JSON.parse(await file.text()),BACKUP_SCHEMA_VERSION,Object.keys(ACQUISITIONS));
     if(!await confirmDestructive({title:'以備份覆蓋目前資料？',description:'目前瀏覽器中的資料會先被清除，再還原備份內容。',details:[`備份含 ${data.transactions.length} 筆交易紀錄。`,'建議先匯出目前資料，以免遺失。'],confirmLabel:'覆蓋並還原'})) return;
-    const restoredSettings={id:'default',monthlyExpenseTarget:0,dividendDateBasis:data.settings.dividendDateBasis||'PAYMENT_DATE',trendTooltipEventLimit:normaliseTrendTooltipEventLimit(data.settings.trendTooltipEventLimit),showTotalAsset:data.settings.showTotalAsset ?? true,showTotalReturn:data.settings.showTotalReturn ?? true,gainMilestoneInterval:normaliseGainMilestoneInterval(data.settings.gainMilestoneInterval),...normaliseTrendEventMarkerSettings(data.settings),lastSuccessfulMarketSyncDate:null,lastMarketSyncAttemptDate:null,marketAutoSyncPausedUntil:null};
+    const legacyAge=normaliseProjectionSetting(data.settings.retirementCurrentAge,40,18,79),birthMonth=isYearMonth(data.settings.retirementBirthMonth)?data.settings.retirementBirthMonth:inferBirthMonth(legacyAge,currentYearMonth()),hasSaleWithdrawalSetting=data.settings.retirementSaleWithdrawalRateVersion===1,restoredSettings={id:'default',monthlyExpenseTarget:0,dividendDateBasis:data.settings.dividendDateBasis||'PAYMENT_DATE',retirementBirthMonth:birthMonth,retirementCurrentAge:ageAtYearMonth(birthMonth,currentYearMonth())??legacyAge,retirementTargetAge:normaliseProjectionSetting(data.settings.retirementTargetAge,60,19,90),retirementLifeExpectancy:normaliseProjectionSetting(data.settings.retirementLifeExpectancy,90,20,110),retirementOtherMonthlyIncome:normaliseProjectionSetting(data.settings.retirementOtherMonthlyIncome,0,0,10000000),retirementMonthlyContribution:data.settings.retirementMonthlyContribution==null?null:normaliseProjectionSetting(data.settings.retirementMonthlyContribution,0,0,10000000),retirementAnnualReturnRate:normaliseProjectionSetting(data.settings.retirementAnnualReturnRate,6,0,20),retirementInflationRate:normaliseProjectionSetting(data.settings.retirementInflationRate,2,0,10),retirementWithdrawalRate:hasSaleWithdrawalSetting?normaliseProjectionSetting(data.settings.retirementWithdrawalRate,0,0,10):0,retirementSaleWithdrawalRateVersion:1,trendTooltipEventLimit:normaliseTrendTooltipEventLimit(data.settings.trendTooltipEventLimit),showTotalAsset:data.settings.showTotalAsset ?? true,showTotalReturn:data.settings.showTotalReturn ?? true,gainMilestoneInterval:normaliseGainMilestoneInterval(data.settings.gainMilestoneInterval),...normaliseTrendEventMarkerSettings(data.settings),lastSuccessfulMarketSyncDate:null,lastMarketSyncAttemptDate:null,marketAutoSyncPausedUntil:null};
     await replaceBrowserData({transactions:data.transactions.map(backupTransaction),settings:[restoredSettings],marketCache:[],budgetPlans:data.budgetPlans,budgetItems:data.budgetItems});
     settings=restoredSettings;
     await load();toast('已還原備份；請重新同步市場資料');

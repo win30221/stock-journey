@@ -23,9 +23,16 @@ test('backup validation rejects malformed or duplicate records before restore', 
   };
   assert.equal(validateBackupPayload(valid, 3, ['MANUAL_BUY']), valid);
   assert.throws(() => validateBackupPayload({...valid,transactions:[valid.transactions[0],valid.transactions[0]]},3,['MANUAL_BUY']), /重複 id/);
+  assert.throws(() => validateBackupPayload({...valid,transactions:[{...valid.transactions[0],quantity:.5}]},3,['MANUAL_BUY']), /至少 1 股的整數/);
   assert.throws(() => validateBackupPayload({...valid,transactions:[{...valid.transactions[0],price:0}]},3,['MANUAL_BUY']), /成交價/);
   assert.throws(() => validateBackupPayload({...valid,budgetItems:[{...valid.budgetItems[0],bucket:'UNKNOWN'}]},3,['MANUAL_BUY']), /生活層級/);
   assert.throws(() => validateBackupPayload({...valid,transactions:[{...valid.transactions[0],id:'bad\" onclick=\"x'}]},3,['MANUAL_BUY']), /id 格式不安全/);
+  assert.throws(() => validateBackupPayload({...valid,settings:{id:'default',retirementCurrentAge:60,retirementTargetAge:55}},3,['MANUAL_BUY']), /退休年齡必須大於/);
+  assert.throws(() => validateBackupPayload({...valid,settings:{id:'default',retirementInflationRate:99}},3,['MANUAL_BUY']), /通膨率/);
+  assert.throws(() => validateBackupPayload({...valid,settings:{id:'default',retirementBirthMonth:'1990-99'}},3,['MANUAL_BUY']), /出生年月/);
+  assert.throws(() => validateBackupPayload({...valid,settings:{id:'default',retirementTargetAge:70,retirementLifeExpectancy:65}},3,['MANUAL_BUY']), /預估壽命必須大於/);
+  assert.throws(() => validateBackupPayload({...valid,settings:{id:'default',retirementTargetAge:60.5}},3,['MANUAL_BUY']), /退休年齡必須是整數/);
+  assert.throws(() => validateBackupPayload({...valid,budgetItems:[{...valid.budgetItems[0],amountBaseMonth:'2026-13'}]},3,['MANUAL_BUY']), /金額基準月/);
 });
 
 test('corrupted local storage is surfaced without overwriting the raw value', async () => {
@@ -46,6 +53,8 @@ test('CSV import detects the same file and suspicious duplicate rows', async () 
   const first = planCsvTransactionImport(csv, [], () => `id-${++id}`, '2026-08-31T00:00:00.000Z');
   assert.equal(first.records.length, 1);
   assert.equal(first.duplicateFile, false);
+  const fractional = planCsvTransactionImport('date,acquisition_type,symbol,quantity,price,fee\n2026-08-30,MANUAL_BUY,0050,0.5,100,0', [], () => `id-${++id}`);
+  assert.deepEqual(fractional.errors, ['第 2 列：台股股數須為至少 1 股的整數']);
   const duplicate = planCsvTransactionImport(csv, first.records, () => `id-${++id}`);
   assert.equal(duplicate.duplicateFile, true);
   const overlapping = planCsvTransactionImport(csv + '\n2026-08-31,MANUAL_BUY,2330,1,900,0', first.records.map(row => ({...row,importFileFingerprint:null})), () => `id-${++id}`);

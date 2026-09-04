@@ -1,6 +1,7 @@
 export const PAGE_IDS = Object.freeze([
   'overview',
   'budget',
+  'retirement-calculator',
   'transactions',
   'dividends',
   'market-data',
