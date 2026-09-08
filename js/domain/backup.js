@@ -1,18 +1,13 @@
+import { isYearMonth } from './retirement.js';
+import { validateTransactionFields } from './transaction-validation.js';
+
 const SAFE_ID = /^[A-Za-z0-9:_-]{1,100}$/;
-const SAFE_SYMBOL = /^[A-Za-z0-9._-]{1,12}$/;
 const BACKUP_BUDGET_BUCKETS = new Set(['NEED', 'WANT']);
 const BACKUP_BUDGET_MODES = new Set(['RECURRING', 'REPLACEMENT']);
 const BACKUP_BUDGET_FREQUENCIES = new Set(['DAILY', 'WEEKLY', 'MONTHLY', 'BIMONTHLY', 'QUARTERLY', 'SEMIANNUAL', 'ANNUAL', 'EVERY_N_MONTHS', 'EVERY_N_YEARS']);
 
 function isPlainObject(value) { return Boolean(value) && typeof value === 'object' && !Array.isArray(value); }
 function isFiniteNumber(value) { return Number.isFinite(Number(value)); }
-function backupIsoCalendarDate(value) {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(value || '')) return false;
-  const [year, month, day] = value.split('-').map(Number);
-  const date = new Date(Date.UTC(year, month - 1, day));
-  return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day;
-}
-function backupYearMonth(value) { return /^\d{4}-(0[1-9]|1[0-2])$/.test(value || ''); }
 
 function assertRecordIds(records, label) {
   const ids = new Set();
@@ -33,12 +28,18 @@ export function validateBackupPayload(data, expectedSchemaVersion, acquisitionTy
   if (data.settings.id != null && !SAFE_ID.test(data.settings.id)) throw Error('設定 id 格式不安全');
   data.transactions.forEach((transaction, index) => {
     const prefix = `交易紀錄第 ${index + 1} 筆`;
-    if (!backupIsoCalendarDate(transaction.date)) throw Error(`${prefix}日期格式錯誤`);
-    if (!acquisitionTypes.includes(transaction.acquisitionType)) throw Error(`${prefix}取得方式錯誤`);
-    if (!SAFE_SYMBOL.test(transaction.symbol || '')) throw Error(`${prefix}股票代號格式錯誤`);
-    if (!(isFiniteNumber(transaction.quantity) && Number.isInteger(Number(transaction.quantity)) && Number(transaction.quantity) >= 1)) throw Error(`${prefix}台股股數須為至少 1 股的整數`);
-    if (transaction.acquisitionType !== 'STOCK_DIVIDEND' && !(isFiniteNumber(transaction.price) && Number(transaction.price) > 0)) throw Error(`${prefix}成交價必須是大於 0 的有限數字`);
-    if (!(isFiniteNumber(transaction.fee) && Number(transaction.fee) >= 0)) throw Error(`${prefix}手續費不得小於 0`);
+    const invalid = validateTransactionFields(transaction, { acquisitionTypes });
+    if (invalid) {
+      const message = {
+        date: '日期格式錯誤',
+        acquisitionType: '取得方式錯誤',
+        symbol: '股票代號格式錯誤',
+        quantity: '台股股數須為至少 1 股的整數',
+        price: '成交價必須是大於 0 的有限數字',
+        fee: '手續費不得小於 0',
+      }[invalid.field];
+      throw Error(`${prefix}${message}`);
+    }
   });
   if (data.settings.dividendDateBasis != null && !['PAYMENT_DATE', 'EX_DIVIDEND_DATE'].includes(data.settings.dividendDateBasis)) throw Error('設定中的股息日期基準錯誤');
   const projectionRanges = [
@@ -54,9 +55,9 @@ export function validateBackupPayload(data, expectedSchemaVersion, acquisitionTy
   if (data.settings.retirementCurrentAge != null && data.settings.retirementTargetAge != null && Number(data.settings.retirementTargetAge)<=Number(data.settings.retirementCurrentAge)) throw Error('設定中的退休年齡必須大於目前年齡');
   if (data.settings.retirementTargetAge != null && !Number.isInteger(Number(data.settings.retirementTargetAge))) throw Error('設定中的退休年齡必須是整數');
   if (data.settings.retirementLifeExpectancy != null && !Number.isInteger(Number(data.settings.retirementLifeExpectancy))) throw Error('設定中的預估壽命必須是整數');
-  if (data.settings.retirementBirthMonth != null && !backupYearMonth(data.settings.retirementBirthMonth)) throw Error('設定中的出生年月格式錯誤');
+  if (data.settings.retirementBirthMonth != null && !isYearMonth(data.settings.retirementBirthMonth)) throw Error('設定中的出生年月格式錯誤');
   if (data.settings.retirementBirthMonthConfirmed != null && typeof data.settings.retirementBirthMonthConfirmed !== 'boolean') throw Error('設定中的出生年月確認狀態錯誤');
-  if (data.settings.retirementBirthMonthConfirmed === true && !backupYearMonth(data.settings.retirementBirthMonth)) throw Error('已確認的出生年月格式錯誤');
+  if (data.settings.retirementBirthMonthConfirmed === true && !isYearMonth(data.settings.retirementBirthMonth)) throw Error('已確認的出生年月格式錯誤');
   if (data.settings.retirementLifeExpectancy != null && data.settings.retirementTargetAge != null && Number(data.settings.retirementLifeExpectancy)<=Number(data.settings.retirementTargetAge)) throw Error('設定中的預估壽命必須大於退休年齡');
   data.budgetPlans.forEach((plan, index) => {
     const prefix = `退休計畫第 ${index + 1} 筆`;
@@ -76,7 +77,7 @@ export function validateBackupPayload(data, expectedSchemaVersion, acquisitionTy
       if (['EVERY_N_MONTHS', 'EVERY_N_YEARS'].includes(item.frequency) && !(isFiniteNumber(item.intervalCount) && Number(item.intervalCount) >= 1 && Number(item.intervalCount) <= 120)) throw Error(`${prefix}間隔錯誤`);
     }
     if (item.note != null && String(item.note).length > 120) throw Error(`${prefix}備註過長`);
-    if (item.amountBaseMonth != null && !backupYearMonth(item.amountBaseMonth)) throw Error(`${prefix}金額基準月格式錯誤`);
+    if (item.amountBaseMonth != null && !isYearMonth(item.amountBaseMonth)) throw Error(`${prefix}金額基準月格式錯誤`);
   });
   return data;
 }

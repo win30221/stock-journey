@@ -1,14 +1,8 @@
 import { ACQUISITIONS } from '../lib/constants.js';
 import { parseCsvRows } from '../lib/csv.js';
+import { validateTransactionFields } from './transaction-validation.js';
 
-const SYMBOL_PATTERN = /^[A-Za-z0-9._-]{1,12}$/;
-
-function isIsoCalendarDate(value) {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
-  const [year, month, day] = value.split('-').map(Number);
-  const date = new Date(Date.UTC(year, month - 1, day));
-  return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day;
-}
+export { isIsoCalendarDate } from './transaction-validation.js';
 
 function csvSymbol(value) {
   const symbol = String(value || '').trim();
@@ -51,13 +45,15 @@ export function planCsvTransactionImport(text, existingTransactions, createId, c
     const quantity = Number(row.quantity);
     const price = row.price === '' ? null : Number(row.price);
     const fee = Number(row.fee);
-    const error = !isIsoCalendarDate(date) ? '日期必須是有效的 YYYY-MM-DD'
-      : !Object.hasOwn(ACQUISITIONS, acquisitionType) ? `取得方式必須是 ${Object.keys(ACQUISITIONS).join('、')}`
-      : !SYMBOL_PATTERN.test(symbol) ? '股票代號只能包含英數字、句點、底線或連字號，且最多 12 字元'
-      : !(Number.isFinite(quantity) && Number.isInteger(quantity) && quantity >= 1) ? '台股股數須為至少 1 股的整數'
-      : acquisitionType !== 'STOCK_DIVIDEND' && !(Number.isFinite(price) && price > 0) ? '此取得方式的價格必須是大於 0 的有限數字'
-      : !(Number.isFinite(fee) && fee >= 0) ? '手續費必須是大於或等於 0 的有限數字'
-      : '';
+    const invalid = validateTransactionFields({ date, acquisitionType, symbol, quantity, price, fee });
+    const error = invalid && {
+      date: '日期必須是有效的 YYYY-MM-DD',
+      acquisitionType: `取得方式必須是 ${Object.keys(ACQUISITIONS).join('、')}`,
+      symbol: '股票代號只能包含英數字、句點、底線或連字號，且最多 12 字元',
+      quantity: '台股股數須為至少 1 股的整數',
+      price: '此取得方式的價格必須是大於 0 的有限數字',
+      fee: '手續費必須是大於或等於 0 的有限數字',
+    }[invalid.field];
     if (error) { errors.push(`第 ${row._row} 列：${error}`); return; }
 
     const record = { id:createId(), date, acquisitionType, symbol, quantity, price, fee, importBatchId, importFileFingerprint:fingerprint, sourceRowNumber:row._row, createdAt };
@@ -69,5 +65,3 @@ export function planCsvTransactionImport(text, existingTransactions, createId, c
 
   return { fingerprint, duplicateFile:false, records, errors, duplicateRows };
 }
-
-export { isIsoCalendarDate };

@@ -9,6 +9,7 @@ export const fmtSignedMoney = value => {
 const averageCost = new Intl.NumberFormat('zh-TW', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 export const fmtAverageCost = value => value == null ? '—' : `${averageCost.format(Number(value))} 元`;
 const perShare = new Intl.NumberFormat('zh-TW', { maximumFractionDigits: 4 });
+export const fmtPerShareNumber = value => value == null ? '—' : perShare.format(Number(value));
 export const fmtPerShare = value => value == null ? '—' : `${perShare.format(Number(value))} 元`;
 
 export function escapeHtml(value) {

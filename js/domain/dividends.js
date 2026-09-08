@@ -1,12 +1,3 @@
-export function quantityAtDate(transactions, symbol, date) {
-  return transactions.reduce((total, row) => row.symbol === symbol && row.date <= date ? total + Number(row.quantity) : total, 0);
-}
-
-export function previousTradingDate(marketCaches, symbol, date) {
-  const cache = marketCaches.find(row => row.symbol === symbol);
-  return (cache?.prices || []).reduce((latest, price) => price.date < date && (!latest || price.date > latest) ? price.date : latest, null);
-}
-
 function transactionQuantityIndex(transactions) {
   const bySymbol = new Map();
   transactions.forEach(row => { const rows=bySymbol.get(row.symbol)||[]; rows.push(row); bySymbol.set(row.symbol,rows); });
@@ -58,12 +49,23 @@ export function calculateDividendReceipts({ transactions, marketCaches, dateBasi
     .filter(dividend => dividend.eligible > 0 && dividend.basis);
 }
 
-export function calculateProjectedAnnualDividends({ transactions, marketCaches, asOfDate }) {
+export function calculateProjectedAnnualDividends({ transactions, marketCaches, asOfDate, requiredThroughDate = asOfDate }) {
   const end = /^\d{4}-\d{2}-\d{2}$/.test(asOfDate || '') ? asOfDate : new Date().toISOString().slice(0, 10);
-  const startDate = new Date(`${end}T00:00:00`);
-  startDate.setFullYear(startDate.getFullYear() - 1);
-  const start = `${startDate.getFullYear()}-${String(startDate.getMonth() + 1).padStart(2, '0')}-${String(startDate.getDate()).padStart(2, '0')}`;
+  const startDate = new Date(`${end}T00:00:00Z`);
+  startDate.setUTCFullYear(startDate.getUTCFullYear() - 1);
+  const start = startDate.toISOString().slice(0, 10);
   const quantities = transactionQuantityIndex(transactions);
+  const requiredThrough = /^\d{4}-\d{2}-\d{2}$/.test(requiredThroughDate || '') ? requiredThroughDate : end;
+  const cachesBySymbol = new Map(marketCaches.map(cache => [cache.symbol, cache]));
+  const coverage = [...quantities.keys()]
+    .filter(symbol => quantityFromIndex(quantities, symbol, end) > 0)
+    .map(symbol => {
+      const cache = cachesBySymbol.get(symbol);
+      const from = cache?.dividendCoverageFrom || null;
+      const through = cache?.dividendCheckedThrough || null;
+      return { symbol, from, through, complete:Boolean(from && from <= start && through && through >= requiredThrough) };
+    });
+  const incompleteSymbols = coverage.filter(row => !row.complete).map(row => row.symbol);
   const rows = marketCaches.flatMap(cache => (cache.dividends || []).map(dividend => ({ ...dividend, symbol:cache.symbol })))
     .filter(dividend => Number(dividend.cash) > 0)
     .filter(dividend => {
@@ -75,7 +77,7 @@ export function calculateProjectedAnnualDividends({ transactions, marketCaches, 
       return { symbol:dividend.symbol, date:dividend.exDate || dividend.paymentDate, cash:Number(dividend.cash), quantity, amount:quantity * Number(dividend.cash) };
     })
     .filter(row => row.amount > 0);
-  return { start, end, rows, annual:rows.reduce((total,row)=>total+row.amount,0) };
+  return { start, end, rows, annual:rows.reduce((total,row)=>total+row.amount,0), coverageComplete:incompleteSymbols.length === 0, incompleteSymbols, coverage };
 }
 
 export function calculateStockDividendChecks(transactions, marketCaches) {
@@ -95,7 +97,7 @@ export function calculateStockDividendChecks(transactions, marketCaches) {
 
 export function summarizeDividends(receipts, transactionRows, now = new Date(), currentDate = null) {
   const months = [];
-  const cursor = new Date(now.getFullYear(), now.getMonth(), 0);
+  const cursor = new Date(now.getFullYear(), now.getMonth() - 1, 1);
   const first = transactionRows.length ? [...transactionRows].sort((a,b) => a.date.localeCompare(b.date))[0].date.slice(0,7) : null;
   while (first && `${cursor.getFullYear()}-${String(cursor.getMonth()+1).padStart(2,'0')}` >= first) {
     months.unshift(`${cursor.getFullYear()}-${String(cursor.getMonth()+1).padStart(2,'0')}`);
