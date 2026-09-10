@@ -96,6 +96,44 @@ test('background market refresh preserves a transaction draft',t=>{
   assert.equal(f.run('renders'),0);
 });
 
+test('retirement market refresh updates asset sources and results without replacing the draft', t => {
+  const f = createAppFixture(t);
+  const amount = f.element('projectionAssetAmount');
+  const form = f.element('retirementProjectionForm');
+  const result = f.element('retirementProjectionResult');
+  const input = f.element('monthlyContribution');
+  form.fields = {
+    birthMonth: '1986-09', otherMonthlyIncome: '0', monthlyContribution: '12345',
+    annualReturnRate: '12.5', inflationRate: '2', withdrawalRate: '0',
+  };
+  input.value = '12345';
+  input.focus();
+  f.run(`
+    page = 'retirement-calculator';
+    settingsStore.replace({ ...createDefaultSettings(), retirementBirthMonth:'1986-09', retirementBirthMonthConfirmed:true });
+    transactions = [{ id:'t', date:'2026-09-01', symbol:'0050', quantity:100, price:100, fee:0, acquisitionType:'MANUAL_BUY' }];
+    marketTradingDates = ['2026-09-04'];
+    marketCaches = [{ symbol:'0050', prices:[], dividends:[], dividendCoverageFrom:'2025-01-01', dividendCheckedThrough:'2026-09-04' }];
+    let refreshedProjection;
+    bindProjectionChart = projection => { refreshedProjection = projection; };
+    render = () => { throw Error('Market refresh must preserve the existing form'); };
+    refreshMarketView();
+  `);
+  assert.equal(amount.textContent, '10,000 元', 'missing prices use the cost estimate');
+  f.run(`
+    marketCaches = [{ ...marketCaches[0], prices:[{ date:'2026-09-04', close:200 }] }];
+    refreshMarketView();
+  `);
+  assert.equal(amount.textContent, '20,000 元');
+  assert.equal(f.run('refreshedProjection.currentAssets'), 20000);
+  assert.equal(f.run('refreshedProjection.monthlyContribution'), 12345);
+  assert.equal(f.run('refreshedProjection.annualReturnRate'), 0.125);
+  assert.equal(f.nodes.get('#retirementProjectionForm'), form);
+  assert.equal(f.nodes.get('#retirementProjectionResult'), result);
+  assert.equal(f.doc.activeElement, input);
+  assert.equal(input.value, '12345');
+});
+
 test('a load holding an older settings snapshot cannot overwrite a newer successful settings save',async t=>{
   const f=createAppFixture(t);
   let releaseCollections,settingsWereRead;
