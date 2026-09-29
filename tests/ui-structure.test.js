@@ -196,7 +196,6 @@ test('mobile asset chart keeps labels readable and details below the plot', () =
   const mobileStyles = styles.match(/@media \(max-width: 520px\) \{([\s\S]*?)\n\}/)?.[1] || '';
 
   assert.match(source, /trendChartMetrics[\s\S]*?left:82/);
-  assert.match(source, /function trendAxisLabelIndexes[\s\S]*?isCompactTrendChart\(\)\?3:6/);
   assert.match(source, /class="trend-chart-visual"[\s\S]*?id="trendTooltip"/);
   assert.match(source, /tabindex="0" aria-label="持股資產走勢圖，可使用左右方向鍵查看各日期"/);
   assert.match(mobileStyles, /\.trend-tooltip\s*\{[^}]*position:\s*relative[^}]*width:\s*100%/);

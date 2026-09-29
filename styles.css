@@ -555,10 +555,10 @@ header { display: flex; justify-content: space-between; align-items: flex-end; g
 .asset-chart-stage:focus-visible { outline: 3px solid #93b4fa; outline-offset: 2px; border-radius: 8px; }
 .asset-chart-stage svg { width: 100%; height: 100%; overflow: visible; }
 .chart-grid { stroke: #e4ebf6; stroke-width: 1; }
-.chart-y-axis, .chart-x-axis { position: absolute; inset: 0; z-index: 1; color: #64748b; font-size: 12px; font-variant-numeric: tabular-nums; line-height: 1; pointer-events: none; }
+.chart-y-axis, .chart-x-axis { position: absolute; inset: 0; z-index: 1; color: var(--muted); font-size: 14px; font-weight: 400; font-variant-numeric: tabular-nums; line-height: 1; pointer-events: none; }
 .chart-y-axis span, .chart-x-axis span { position: absolute; white-space: nowrap; }
 .chart-y-axis span { left: 8%; transform: translate(calc(-100% - 12px), -50%); text-align: right; }
-.chart-x-axis span { top: 95.3%; transform: translate(-50%, -50%); font-size: 12px; }
+.chart-x-axis span { top: 95.3%; transform: translate(-50%, -50%); font-size: 14px; }
 .chart-x-axis span.is-first { transform: translate(0, -50%); }
 .chart-x-axis span.is-last { transform: translate(-100%, -50%); }
 .trend-market-line { fill: none; stroke: #0f91b8; stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; }
@@ -1272,8 +1272,8 @@ td small { display: block; margin-top: 2px; color: var(--subtle); font-size: .75
   .segmented button, .trend-ranges button { min-width: 44px; min-height: 44px; }
   .trend-workspace.has-detail { grid-template-columns: minmax(0, 1fr) 244px; gap: 12px; }
   .asset-chart-stage { height: 285px; }
-  .chart-y-axis, .chart-x-axis { font-size: 12px; }
-  .chart-x-axis span { font-size: 12px; }
+  .chart-y-axis, .chart-x-axis { font-size: 14px; }
+  .chart-x-axis span { font-size: 14px; }
   .trend-tooltip { width: 244px; font-size: .75rem; }
   .trend-detail-drawer { padding: 13px; font-size: .75rem; }
   .transaction-group summary { grid-template-columns: 1fr 1fr; gap: 12px; padding: 14px; }
@@ -1367,9 +1367,9 @@ td small { display: block; margin-top: 2px; color: var(--subtle); font-size: .75
   .mobile-chart-hint { display: block; margin: 12px 0 0; color: #64748b; font-size: .75rem; line-height: 1.5; }
   .trend-workspace.has-detail { grid-template-columns: 1fr; }
   .asset-chart-stage { height: 236px; }
-  .chart-y-axis { font-size: 12px; }
+  .chart-y-axis { font-size: 14px; }
   .chart-y-axis span { transform: translate(calc(-100% - 8px), -50%); }
-  .chart-x-axis span { top: 94.5%; font-size: 12px; }
+  .chart-x-axis span { top: 94.5%; font-size: 14px; }
   .trend-market-line { stroke-width: 3.5; }
   .trend-event-halo { width: 20px; height: 20px; border-width: 1.5px; }
   .trend-event-dot { width: 8px; height: 8px; border-width: 2px; }
