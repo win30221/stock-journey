@@ -1,22 +1,13 @@
-function transactionQuantityIndex(transactions) {
+import { quantityAtDate, splitFactor, splitCoverageComplete } from './splits.js';
+function transactionQuantityIndex(transactions, marketCaches = []) {
   const bySymbol = new Map();
   transactions.forEach(row => { const rows=bySymbol.get(row.symbol)||[]; rows.push(row); bySymbol.set(row.symbol,rows); });
-  for (const [symbol, rows] of bySymbol) {
-    let quantity = 0;
-    bySymbol.set(symbol, rows.sort((a,b)=>a.date.localeCompare(b.date)).map(row => ({ date:row.date, quantity:(quantity += Number(row.quantity)) })));
-  }
+  bySymbol.splits = new Map(marketCaches.map(cache => [cache.symbol, cache.splits || []]));
   return bySymbol;
 }
 
 function quantityFromIndex(index, symbol, date) {
-  const rows = index.get(symbol) || [];
-  let low = 0, high = rows.length - 1, match = -1;
-  while (low <= high) {
-    const middle = Math.floor((low + high) / 2);
-    if (rows[middle].date <= date) { match = middle; low = middle + 1; }
-    else high = middle - 1;
-  }
-  return match < 0 ? 0 : rows[match].quantity;
+  return quantityAtDate(index.get(symbol) || [], symbol, index.splits.get(symbol), date);
 }
 
 function priceDateIndex(marketCaches) {
@@ -35,7 +26,7 @@ function previousDateFromIndex(index, symbol, date) {
 }
 
 export function calculateDividendReceipts({ transactions, marketCaches, dateBasis }) {
-  const quantities = transactionQuantityIndex(transactions);
+  const quantities = transactionQuantityIndex(transactions, marketCaches);
   const priceDates = priceDateIndex(marketCaches);
   return marketCaches
     .flatMap(cache => (cache.dividends || []).map(dividend => ({ ...dividend, symbol:cache.symbol })))
@@ -43,7 +34,7 @@ export function calculateDividendReceipts({ transactions, marketCaches, dateBasi
     .map(dividend => {
       const basis = dateBasis === 'EX_DIVIDEND_DATE' ? dividend.exDate : (dividend.paymentDate || dividend.exDate);
       const eligibleDate = dividend.exDate ? previousDateFromIndex(priceDates, dividend.symbol, dividend.exDate) : null;
-      const eligible = eligibleDate ? quantityFromIndex(quantities, dividend.symbol, eligibleDate) : 0;
+      const eligible = eligibleDate ? quantityFromIndex(quantities, dividend.symbol, eligibleDate) * splitFactor(quantities.splits.get(dividend.symbol), eligibleDate, dividend.exDate) : 0;
       return { ...dividend, basis, eligibleDate, eligible, amount:eligible * Number(dividend.cash) };
     })
     .filter(dividend => dividend.eligible > 0 && dividend.basis);
@@ -54,7 +45,7 @@ export function calculateProjectedAnnualDividends({ transactions, marketCaches, 
   const startDate = new Date(`${end}T00:00:00Z`);
   startDate.setUTCFullYear(startDate.getUTCFullYear() - 1);
   const start = startDate.toISOString().slice(0, 10);
-  const quantities = transactionQuantityIndex(transactions);
+  const quantities = transactionQuantityIndex(transactions, marketCaches);
   const requiredThrough = /^\d{4}-\d{2}-\d{2}$/.test(requiredThroughDate || '') ? requiredThroughDate : end;
   const cachesBySymbol = new Map(marketCaches.map(cache => [cache.symbol, cache]));
   const coverage = [...quantities.keys()]
@@ -63,7 +54,7 @@ export function calculateProjectedAnnualDividends({ transactions, marketCaches, 
       const cache = cachesBySymbol.get(symbol);
       const from = cache?.dividendCoverageFrom || null;
       const through = cache?.dividendCheckedThrough || null;
-      return { symbol, from, through, complete:Boolean(from && from <= start && through && through >= requiredThrough) };
+      return { symbol, from, through, complete:Boolean(from && from <= start && through && through >= requiredThrough && splitCoverageComplete(cache, requiredThrough)) };
     });
   const incompleteSymbols = coverage.filter(row => !row.complete).map(row => row.symbol);
   const rows = marketCaches.flatMap(cache => (cache.dividends || []).map(dividend => ({ ...dividend, symbol:cache.symbol })))
@@ -74,14 +65,16 @@ export function calculateProjectedAnnualDividends({ transactions, marketCaches, 
     })
     .map(dividend => {
       const quantity=quantityFromIndex(quantities, dividend.symbol, end);
-      return { symbol:dividend.symbol, date:dividend.exDate || dividend.paymentDate, cash:Number(dividend.cash), quantity, amount:quantity * Number(dividend.cash) };
+      const eventDate = dividend.exDate || dividend.paymentDate;
+      const cash = Number(dividend.cash) / splitFactor(cachesBySymbol.get(dividend.symbol)?.splits, eventDate, end);
+      return { symbol:dividend.symbol, date:eventDate, cash, originalCash:Number(dividend.cash), quantity, amount:quantity * cash };
     })
     .filter(row => row.amount > 0);
   return { start, end, rows, annual:rows.reduce((total,row)=>total+row.amount,0), coverageComplete:incompleteSymbols.length === 0, incompleteSymbols, coverage };
 }
 
 export function calculateStockDividendChecks(transactions, marketCaches) {
-  const quantities = transactionQuantityIndex(transactions);
+  const quantities = transactionQuantityIndex(transactions, marketCaches);
   const priceDates = priceDateIndex(marketCaches);
   const events = marketCaches.flatMap(cache => (cache.dividends || []).filter(dividend => Number(dividend.stock) > 0 && dividend.exDate).map(dividend => ({ ...dividend, symbol:cache.symbol })));
   return events.map(event => {
@@ -90,7 +83,7 @@ export function calculateStockDividendChecks(transactions, marketCaches) {
       event,
       eligibleDate,
       matching:transactions.find(row => row.acquisitionType === 'STOCK_DIVIDEND' && row.symbol === event.symbol && row.date === event.exDate),
-      expected:(eligibleDate ? quantityFromIndex(quantities, event.symbol, eligibleDate) : 0) * Number(event.stock) / 10,
+      expected:(eligibleDate ? quantityFromIndex(quantities, event.symbol, eligibleDate) * splitFactor(quantities.splits.get(event.symbol), eligibleDate, event.exDate) : 0) * Number(event.stock) / 10,
     };
   });
 }

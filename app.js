@@ -1,5 +1,7 @@
+import { normaliseSplitEvents, splitAdjustedQuantity, splitAdjustedPrice, splitCoverageComplete } from './js/domain/splits.js';
+import { createComparisonPage } from './js/app/comparison-page.js';
 import { ACQUISITIONS, APP_VERSION, BACKUP_SCHEMA_VERSION, MARKET_RETRY_BASE_MINUTES, TREND_EVENT_MARKER_SETTINGS } from './js/lib/constants.js';
-import { escapeHtml, fmt, fmtAverageCost, fmtPerShare, fmtPerShareNumber, fmtSignedMoney, money } from './js/lib/format.js';
+import { escapeHtml, fmt, fmtAverageCost, fmtPerShare, fmtPerShareNumber, fmtSignedMoney, fmtShares, money } from './js/lib/format.js';
 import { isWaitingForTodayClose, isWeekday, marketTargetDate as resolveMarketTargetDate, shiftDate, taipeiClock, today, uid } from './js/lib/date.js';
 import { calculateTransactionCost, calculateUnrealizedReturn } from './js/domain/portfolio.js';
 import { ageAtYearMonth, calculateAnnualBudget, calculateBudgetSummaryAt, calculateRetirementProjection, inferBirthMonth, isYearMonth } from './js/domain/retirement.js';
@@ -26,6 +28,12 @@ let onboardingCompletionNoticeVisible = false;
 const stockSearch = createStockSearch({ getMarketCaches:() => marketCaches, isTransactionModalOpen:() => transactionModalOpen });
 const root = document.querySelector('#root');
 const marketTask = createCancellableTask();
+const comparisonPage = createComparisonPage({
+  stockSearch, fetchData:fetchFinMindData,
+  getCaches:() => marketCaches, getTargetDate:() => marketTargetDate(),
+  isActive:() => page === 'stock-comparison',
+  repaint:() => { if (page === 'stock-comparison' && !dataMaintenance) render(); },
+});
 let dataMaintenance = false, dataRevision = 0;
 let loadQueue = Promise.resolve();
 const settingsStore = createSettingsStore({ repository:settingsRepository, initialSettings:settings });
@@ -82,6 +90,7 @@ async function replaceDataSafely(action, { discardSettings = true } = {}) {
   clearTimeout(marketSyncTimer);
   try {
     await marketTask.cancel();
+    await comparisonPage.reset();
     // Data migrations can write during loading, so finish them before replacement.
     await loadQueue;
     if(discardSettings)await Promise.all([chartSettingsAutosave.cancel(),projectionAutosave.cancel()]);
@@ -147,6 +156,7 @@ const PAGE_LABELS = {
   'retirement-calculator': '退休試算',
   dividends: '股息現金流',
   'market-data': '市場資料',
+  'stock-comparison': '股票比較',
   settings: '設定',
 };
 async function load(options = {}) {
@@ -217,13 +227,14 @@ function retryAvailable(cache, now = new Date()) { return !cache?.retryAfter || 
 function isMarketAutoSyncPaused(now = new Date()) { return Boolean(settings.marketAutoSyncPausedUntil)&&new Date(settings.marketAutoSyncPausedUntil)>now; }
 function symbolNeedsMarketSync(symbol, target = marketTargetDate(), now = new Date()) {
   const cache=cacheFor(symbol), earliest=earliestTransactionDate(symbol), priceFrom=cache?.priceCoverageFrom||firstMarketDate(cache);
+  if (!splitCoverageComplete(cache, target)) return retryAvailable(cache,now);
   if (!cache || !(cache.prices || []).length || !checkedThrough(cache,'price') || !checkedThrough(cache,'dividend')) return retryAvailable(cache,now);
   if (createMarketSyncPlan({cache,transactionStart:earliest,target}).dividendNeeded || (earliest&&priceFrom&&earliest<priceFrom) || checkedThrough(cache,'price')<target || checkedThrough(cache,'dividend')<target) return retryAvailable(cache,now);
   return Boolean(cache.syncErrors?.length) && retryAvailable(cache,now);
 }
 function marketSyncSummary(now = new Date()) {
   const symbols=[...new Set(transactions.map(row=>row.symbol))], target=marketTargetDate(now), waiting=isWaitingForTodayClose(now);
-  const rows=symbols.map(symbol=>{const cache=cacheFor(symbol),hasPrice=Boolean(lastMarketDate(cache)),priceReady=hasPrice&&Boolean(checkedThrough(cache,'price'))&&checkedThrough(cache,'price')>=target,dividendReady=Boolean(checkedThrough(cache,'dividend'))&&checkedThrough(cache,'dividend')>=target;return {symbol,cache,hasPrice,priceReady,dividendReady,errors:cache?.syncErrors||[]};});
+  const rows=symbols.map(symbol=>{const cache=cacheFor(symbol),hasPrice=Boolean(lastMarketDate(cache)),priceReady=hasPrice&&Boolean(checkedThrough(cache,'price'))&&checkedThrough(cache,'price')>=target,dividendReady=Boolean(checkedThrough(cache,'dividend'))&&checkedThrough(cache,'dividend')>=target&&splitCoverageComplete(cache,target);return {symbol,cache,hasPrice,priceReady,dividendReady,errors:cache?.syncErrors||[]};});
   const priceCount=rows.filter(row=>row.hasPrice).length, readyCount=rows.filter(row=>row.priceReady&&row.dividendReady&&!row.errors.length).length, errorCount=rows.filter(row=>row.errors.length).length;
   const state=marketSyncInProgress?'SYNCING':!symbols.length?'EMPTY':errorCount?'PARTIAL':readyCount===symbols.length?(waiting?'WAITING_FOR_CLOSE':'READY'):priceCount?'STALE':'PENDING';
   return {symbols,rows,target,waiting,priceCount,readyCount,errorCount,state,latestDate:latestMarketDate()};
@@ -275,12 +286,13 @@ async function maybeAutoSyncMarket() {
   finally { autoSyncInProgress = false; }
 }
 function refreshMarketView() {
+  if (page === 'stock-comparison') return;
   if(page==='retirement-calculator'){
     const assetAmount = document.querySelector('#projectionAssetAmount');
     if (assetAmount) assetAmount.textContent = fmt(metrics().market);
     const forecast=dividendForecast(),amount=document.querySelector('#projectionDividendAmount'),hint=document.querySelector('#projectionDividendHint');
     if(amount)amount.textContent=forecast.coverageComplete?fmt(forecast.annual):'資料待補齊';
-    if(hint)hint.textContent=forecast.coverageComplete?`依目前持股換算，殖利率約 ${(forecast.yield*100).toFixed(1)}%。`:'近一年配息資料尚未完整，請同步市場資料。';
+    if(hint)hint.textContent=forecast.coverageComplete?`依目前持股換算，殖利率約 ${(forecast.yield*100).toFixed(1)}%。`:'近一年配息或分割資料尚未完整，請同步市場資料。';
     const form=document.querySelector('#retirementProjectionForm'),result=document.querySelector('#retirementProjectionResult');
     if(form && result && retirementBirthMonthIsConfirmed()){
       const values=projectionValuesFromForm(form);
@@ -326,6 +338,10 @@ async function syncMarket(options = {}) {
         catch(error) { task.check();console.warn('Stock info sync failed:',error.message); }
       }
       const infoBySymbol=new Map(infoRows.map(row=>[String(row.stock_id),row]));
+      let splitRows = null, splitFailure = null;
+      try { splitRows = await fetchFinMindData('TaiwanStockSplitPrice', null, null, target, { signal:task.signal }); }
+      catch (error) { task.check(); splitFailure = error.message; }
+      task.check();
       for(const symbol of symbols) {
         task.check();
         syncProgress=`市場資料更新中：${completed + 1} / ${symbols.length}（${symbol}）`;
@@ -337,6 +353,15 @@ async function syncMarket(options = {}) {
         ]);
         task.check();
         const failedParts=[];
+        let splits = existing.splits || [], splitCheckedThrough = existing.splitCheckedThrough || null, splitError = null;
+        try {
+          if (!splitRows) throw Error(splitFailure || '分割清單尚未取得');
+          splits = normaliseSplitEvents(splitRows, symbol, target);
+          splitCheckedThrough = target;
+        } catch (error) {
+          splitError = error.message;
+          failedParts.push(`分割：${splitError}`);
+        }
         let prices=existing.prices||[],dividends=existing.dividends||[];
         let priceCoverageFrom=existing.priceCoverageFrom||firstMarketDate(existing),priceCheckedThrough=checkedThrough(existing,'price');
         let dividendCoverageFrom=existing.dividendCoverageFrom||null,dividendCheckedThrough=checkedThrough(existing,'dividend');
@@ -359,7 +384,7 @@ async function syncMarket(options = {}) {
         const info=infoBySymbol.get(symbol)||{};
         const retryCount=failedParts.length?Number(existing.retryCount||0)+1:0;
         const retryAfter=failedParts.length?new Date(Date.now()+Math.min(60,MARKET_RETRY_BASE_MINUTES*2**Math.max(0,retryCount-1))*60000).toISOString():null;
-        const next={...existing,id:`finmind:${symbol}`,symbol,prices,dividends,name:info.stock_name||existing.name||null,securityType:info.type||existing.securityType||null,source:'FINMIND',priceCoverageFrom,priceCheckedThrough,dividendCoverageFrom,dividendCheckedThrough,lastAttemptAt:attemptedAt,lastSuccessAt:failedParts.length?existing.lastSuccessAt||null:attemptedAt,syncedAt:failedParts.length?existing.syncedAt||null:attemptedAt,syncStatus:failedParts.length?(prices.length?'PARTIAL':'ERROR'):'READY',syncErrors:failedParts,retryCount,retryAfter};
+        const next={...existing,id:`finmind:${symbol}`,symbol,prices,dividends,splits,splitCheckedThrough,splitError,name:info.stock_name||existing.name||null,securityType:info.type||existing.securityType||null,source:'FINMIND',priceCoverageFrom,priceCheckedThrough,dividendCoverageFrom,dividendCheckedThrough,lastAttemptAt:attemptedAt,lastSuccessAt:failedParts.length?existing.lastSuccessAt||null:attemptedAt,syncedAt:failedParts.length?existing.syncedAt||null:attemptedAt,syncStatus:failedParts.length?(prices.length?'PARTIAL':'ERROR'):'READY',syncErrors:failedParts,retryCount,retryAfter};
         task.check();
         await marketCacheRepository.save(next);
         task.check();
@@ -471,6 +496,7 @@ function navIcon(id) {
     budget:'<path d="M4 5h16v14H4z"/><path d="M8 9h8M8 13h5M16.5 16.5l1.5 1.5 3-3"/>',
     'retirement-calculator':'<path d="M4 19V5h16v14H4Z"/><path d="m7 15 3-3 2 2 5-6"/><path d="M14 8h3v3"/>',
     transactions:'<path d="M4 6h16M4 12h16M4 18h16"/><circle cx="7" cy="6" r="1"/><circle cx="15" cy="12" r="1"/><circle cx="10" cy="18" r="1"/>',
+    'stock-comparison':'<path d="M3 3v18h18M6 16l4-6 4 3 6-8M6 19l4-3 4 2 6-5"/>',
     'market-data':'<path d="M4 4h16v16H4zM4 9h16M9 4v16"/>',
     settings:'<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2.8 2.8-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6v.2h-4V21a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1L4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9A1.7 1.7 0 0 0 3 14H2.8v-4H3a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9L4.2 7 7 4.2l.1.1A1.7 1.7 0 0 0 9 4.6 1.7 1.7 0 0 0 10 3v-.2h4V3a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1L19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.2v4H21a1.7 1.7 0 0 0-1.6 1Z"/>'
   };
@@ -497,12 +523,27 @@ function render() {
   document.body?.classList.remove('mobile-nav-open');
   const m = page === 'overview' ? metrics() : null;
   const onboarding = getOnboardingState();
-  root.innerHTML = `<div class="shell"><aside><div class="sidebar-heading"><a class="brand" href="#overview"><span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 18 18 5M9 5h9v9"/></svg></span><b>存股退休</b><em>STOCK JOURNEY</em></a><button class="mobile-menu-toggle" type="button" aria-label="開啟菜單" aria-controls="mobileNavigationPanel" aria-expanded="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg></button></div><div class="mobile-nav-panel" id="mobileNavigationPanel"><div class="mobile-nav-heading"><div><b>頁面導覽</b><span>目前：${PAGE_LABELS[page]}</span></div><button class="mobile-nav-close" type="button" aria-label="關閉菜單"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button></div><nav aria-label="主要導覽">${Object.entries(PAGE_LABELS).map(([id,name])=>`<button data-page="${id}" class="${page===id?'active':''}" ${page===id?'aria-current="page"':''}><i>${navIcon(id)}</i><span>${name}</span>${navBadge(id, onboarding)}</button>`).join('')}</nav><div class="privacy"><span aria-hidden="true"></span><b>資料只留在這台裝置</b><a href="#settings" data-page="settings">備份與設定</a></div></div><button class="mobile-nav-backdrop" type="button" aria-label="關閉菜單" aria-hidden="true" tabindex="-1"></button></aside><main id="main-content" tabindex="-1">${header()}${page === 'overview' ? blueDashboardOverview(m) : page === 'budget' ? livingBudgetPage() : page === 'retirement-calculator' ? retirementCalculatorPage() : page === 'transactions' ? transactionsPage() : page === 'market-data' ? marketDataPage() : page === 'settings' ? settingsPage() : dividendsPage()}</main></div>${transactionModal()}${aiImportGuide()}<div id="toast" role="status" aria-live="polite"></div>`;
+  root.innerHTML = `<div class="shell"><aside><div class="sidebar-heading"><a class="brand" href="#overview"><span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 18 18 5M9 5h9v9"/></svg></span><b>存股退休</b><em>STOCK JOURNEY</em></a><button class="mobile-menu-toggle" type="button" aria-label="開啟菜單" aria-controls="mobileNavigationPanel" aria-expanded="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg></button></div><div class="mobile-nav-panel" id="mobileNavigationPanel"><div class="mobile-nav-heading"><div><b>頁面導覽</b><span>目前：${PAGE_LABELS[page]}</span></div><button class="mobile-nav-close" type="button" aria-label="關閉菜單"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button></div><nav aria-label="主要導覽">${Object.entries(PAGE_LABELS).map(([id,name])=>`${id==='stock-comparison'?'<p class="nav-section-label">額外工具</p>':''}<button data-page="${id}" class="${page===id?'active':''}" ${page===id?'aria-current="page"':''}><i>${navIcon(id)}</i><span>${name}</span>${navBadge(id, onboarding)}</button>`).join('')}</nav><div class="privacy"><span aria-hidden="true"></span><b>資料只留在這台裝置</b><a href="#settings" data-page="settings">備份與設定</a></div></div><button class="mobile-nav-backdrop" type="button" aria-label="關閉菜單" aria-hidden="true" tabindex="-1"></button></aside><main id="main-content" tabindex="-1">${header()}${splitDataNotice()}${page === 'overview' ? blueDashboardOverview(m) : page === 'budget' ? livingBudgetPage() : page === 'retirement-calculator' ? retirementCalculatorPage() : page === 'transactions' ? transactionsPage() : page === 'stock-comparison' ? comparisonPage.render() : page === 'market-data' ? marketDataPage() : page === 'settings' ? settingsPage() : dividendsPage()}</main></div>${transactionModal()}${aiImportGuide()}<div id="toast" role="status" aria-live="polite"></div>`;
   bind();
 }
+function splitDataNotice() {
+  if (['stock-comparison', 'settings', 'budget'].includes(page) || !transactions.length) return '';
+  const symbols = [...new Set(transactions.map(row => row.symbol))];
+  const missing = symbols.filter(symbol => !splitCoverageComplete(cacheFor(symbol), marketTargetDate()));
+  const hasEvents = symbols.some(symbol => cacheFor(symbol)?.splits?.length);
+  if (missing.length) return `<div class="split-warning" role="status"><b>分割資料尚未完整確認</b><p>${missing.map(escapeHtml).join('、')} 的股數、市值、損益、股息與退休試算暫供參考；請同步市場資料。已知分割仍會套用。</p></div>`;
+  if (!hasEvents) return '';
+  return '<p class="split-method-note">已按已知分割／反分割及面額變更調整。原始交易保留；請勿再以「配股」重複補入分割股數。反分割零股採等值估算，未計現金結算。</p>';
+}
+function splitEventDetails(stock) {
+  const events = stock.splits || [];
+  if (!events.length) return '';
+  return `<details class="split-events"><summary>分割與面額變更紀錄（${events.length}）</summary><p>股數倍率由參考價校驗推得；行情表保留原始價格，漲跌幅使用調整後的前收盤價。</p><ul>${events.map(event => `<li>${event.date} · ${escapeHtml(event.type)} · 股數 × ${Number(event.ratio.toPrecision(8))}</li>`).join('')}</ul></details>`;
+}
 function header() {
+  if (page === 'stock-comparison') return '<header><div><p class="eyebrow">額外工具</p><h1>股票比較</h1><p>同一段時間，從同一個起點看表現。</p></div></header>';
   const marketSummary=marketSyncSummary();
-  const subtitle=page==='budget' ? '從生活支出建立退休月現金流目標。' : page==='retirement-calculator' ? '結合持股、生活預算與投入計畫，推算退休時間。' : page==='transactions' ? '管理交易紀錄，系統會自動計算持股與成本。' : page==='settings' ? '顯示方式與本機資料管理。' : `市場資料：${marketHeaderLabel(marketSummary)}`;
+  const subtitle=page==='stock-comparison' ? '選擇股票與日期，比較分割調整後的累積漲跌幅。' : page==='budget' ? '從生活支出建立退休月現金流目標。' : page==='retirement-calculator' ? '結合持股、生活預算與投入計畫，推算退休時間。' : page==='transactions' ? '管理交易紀錄，系統會自動計算持股與成本。' : page==='settings' ? '顯示方式與本機資料管理。' : `市場資料：${marketHeaderLabel(marketSummary)}`;
   const action='';
   return `<header><div><p class="eyebrow">存股退休</p><h1>${PAGE_LABELS[page]}</h1><p class="market-as-of" role="status" aria-live="polite" aria-atomic="true">${subtitle}</p></div><div class="header-actions">${action}</div></header>`;
 }
@@ -642,13 +683,13 @@ function retirementBirthMonthRequiredResult() {
   return `<section class="panel projection-needs-data projection-needs-birth"><p class="eyebrow">先確認個人資料</p><h2>輸入出生年月後開始試算</h2><p>我們只需要年月來換算目前年齡與退休年月，不需要完整生日；資料只會儲存在這台裝置。</p></section>`;
 }
 function dividendCoverageNotice(forecast) {
-  return `<section class="panel projection-needs-data" role="status"><p class="eyebrow">配息資料待補齊</p><h2>完成市場同步後顯示退休試算</h2><p>${escapeHtml(forecast.incompleteSymbols.join('、'))} 的近一年配息資料尚未完整。資料不足不代表沒有配息，補齊後才能估算退休時間。</p><button class="primary" type="button" data-page="market-data">查看並同步市場資料</button></section>`;
+  return `<section class="panel projection-needs-data" role="status"><p class="eyebrow">配息資料待補齊</p><h2>完成市場同步後顯示退休試算</h2><p>${escapeHtml(forecast.incompleteSymbols.join('、'))} 的近一年配息或分割資料尚未完整。資料不足不代表沒有配息，補齊後才能估算退休時間。</p><button class="primary" type="button" data-page="market-data">查看並同步市場資料</button></section>`;
 }
 function retirementCalculatorPage() {
   const currentAssets=metrics().market,currentExpense=currentMonthlyTarget(),monthlyContribution=projectionMonthlyContribution(),forecast=dividendForecast(),projection=calculateRetirementProjection(projectionInput()),birthMonthConfirmed=retirementBirthMonthIsConfirmed();
   const assetSource=transactions.length?'依持股市值即時計算；缺少價格時以成本估算。':'尚未有持股資料，目前以 0 元試算。';
   const contributionSource=monthlyContribution===0?'預設為 0，可直接輸入預計投入金額。':'使用你儲存的投入計畫。';
-  return `<section class="projection-page"><section class="projection-source-grid"><article><span>目前可投資資產</span><strong id="projectionAssetAmount">${fmt(currentAssets)}</strong><small>${assetSource}</small><button type="button" data-page="transactions">查看持股與交易</button></article><article><span>近 12 個月預估年股息</span><strong id="projectionDividendAmount">${forecast.coverageComplete?fmt(forecast.annual):'資料待補齊'}</strong><small id="projectionDividendHint">${forecast.coverageComplete?`依目前持股換算，殖利率約 ${(forecast.yield*100).toFixed(1)}%。`:'近一年配息資料尚未完整，請同步市場資料。'}</small><button type="button" data-page="dividends">查看股息現金流</button></article><article><span>目前月生活費目標</span><strong>${currentExpense?fmt(currentExpense):'尚未設定'}</strong><small>依各項生活費的金額基準月換算為本月幣值。</small><button type="button" data-page="budget">查看生活預算</button></article></section><div class="projection-layout"><form id="retirementProjectionForm" class="panel projection-form" novalidate><div class="panel-title"><div><p class="eyebrow">我的退休計畫</p><h2>調整試算條件</h2><p>直接修改即可，結果與設定都會自動更新。</p></div></div><div class="projection-auto-rule"><b>股息優先，自動推算最早退休年齡</b><span>先用目前持股的配息推估支付生活費；不足時才依賣股提領率補足，並固定模擬到 100 歲。</span></div><div id="projectionFormError" class="budget-error-summary" role="alert" tabindex="-1" hidden></div><div class="projection-form-grid"><label class="wide">出生年月<input class="birth-month-input" name="birthMonth" type="month" min="1900-01" max="${currentYearMonth()}" value="${birthMonthConfirmed?projection.birthMonth:''}" required aria-describedby="birthMonthHint"><small id="birthMonthHint">${birthMonthConfirmed?`目前為 ${projection.currentAge} 歲；系統會自動更新年齡。`:'請先選擇出生年月；選擇後會自動更新試算。'}</small></label><label class="wide">退休當時其他月收入<input name="otherMonthlyIncome" type="number" min="0" max="10000000" step="1000" value="${projection.otherMonthlyIncome}" required><small>例如年金或租金；視為退休當年的固定金額，之後不自動隨通膨增加。</small></label><label class="wide">預計每月投入<input name="monthlyContribution" type="number" min="0" max="10000000" step="1000" value="${monthlyContribution.toFixed(0)}" required><small>${contributionSource}</small></label></div><details class="projection-assumptions"><summary>進階假設</summary><div class="projection-form-grid"><label>預期年化總報酬率<input name="annualReturnRate" type="number" min="0" max="20" step="0.1" value="${settings.retirementAnnualReturnRate}" required><small>包含配息；系統會扣除預估股息後，作為股價成長推估，避免重複計算。</small></label><label>預期年通膨率<input name="inflationRate" type="number" min="0" max="10" step="0.1" value="${settings.retirementInflationRate}" required><small>依每筆生活費的金額基準月逐年換算。</small></label><label class="wide">賣股提領率上限<input name="withdrawalRate" type="number" min="0" max="10" step="0.1" value="${settings.retirementWithdrawalRate}" required><small>預設 0%；股息與其他收入不足時，最多可賣出資產的多少比例補足生活費。</small></label></div></details><p class="projection-auto-save" id="projectionSaveStatus" role="status">修改後會自動儲存</p></form><div id="retirementProjectionResult">${birthMonthConfirmed?retirementProjectionResult(projection):retirementBirthMonthRequiredResult()}</div></div><p class="projection-disclaimer">股息以目前持股近 12 個月已知配息推估；本試算固定推演到 100 歲，未計入稅費及市場波動，結果僅供規劃參考。</p></section>`;
+  return `<section class="projection-page"><section class="projection-source-grid"><article><span>目前可投資資產</span><strong id="projectionAssetAmount">${fmt(currentAssets)}</strong><small>${assetSource}</small><button type="button" data-page="transactions">查看持股與交易</button></article><article><span>近 12 個月預估年股息</span><strong id="projectionDividendAmount">${forecast.coverageComplete?fmt(forecast.annual):'資料待補齊'}</strong><small id="projectionDividendHint">${forecast.coverageComplete?`依目前持股換算，殖利率約 ${(forecast.yield*100).toFixed(1)}%。`:'近一年配息或分割資料尚未完整，請同步市場資料。'}</small><button type="button" data-page="dividends">查看股息現金流</button></article><article><span>目前月生活費目標</span><strong>${currentExpense?fmt(currentExpense):'尚未設定'}</strong><small>依各項生活費的金額基準月換算為本月幣值。</small><button type="button" data-page="budget">查看生活預算</button></article></section><div class="projection-layout"><form id="retirementProjectionForm" class="panel projection-form" novalidate><div class="panel-title"><div><p class="eyebrow">我的退休計畫</p><h2>調整試算條件</h2><p>直接修改即可，結果與設定都會自動更新。</p></div></div><div class="projection-auto-rule"><b>股息優先，自動推算最早退休年齡</b><span>先用目前持股的配息推估支付生活費；不足時才依賣股提領率補足，並固定模擬到 100 歲。</span></div><div id="projectionFormError" class="budget-error-summary" role="alert" tabindex="-1" hidden></div><div class="projection-form-grid"><label class="wide">出生年月<input class="birth-month-input" name="birthMonth" type="month" min="1900-01" max="${currentYearMonth()}" value="${birthMonthConfirmed?projection.birthMonth:''}" required aria-describedby="birthMonthHint"><small id="birthMonthHint">${birthMonthConfirmed?`目前為 ${projection.currentAge} 歲；系統會自動更新年齡。`:'請先選擇出生年月；選擇後會自動更新試算。'}</small></label><label class="wide">退休當時其他月收入<input name="otherMonthlyIncome" type="number" min="0" max="10000000" step="1000" value="${projection.otherMonthlyIncome}" required><small>例如年金或租金；視為退休當年的固定金額，之後不自動隨通膨增加。</small></label><label class="wide">預計每月投入<input name="monthlyContribution" type="number" min="0" max="10000000" step="1000" value="${monthlyContribution.toFixed(0)}" required><small>${contributionSource}</small></label></div><details class="projection-assumptions"><summary>進階假設</summary><div class="projection-form-grid"><label>預期年化總報酬率<input name="annualReturnRate" type="number" min="0" max="20" step="0.1" value="${settings.retirementAnnualReturnRate}" required><small>包含配息；系統會扣除預估股息後，作為股價成長推估，避免重複計算。</small></label><label>預期年通膨率<input name="inflationRate" type="number" min="0" max="10" step="0.1" value="${settings.retirementInflationRate}" required><small>依每筆生活費的金額基準月逐年換算。</small></label><label class="wide">賣股提領率上限<input name="withdrawalRate" type="number" min="0" max="10" step="0.1" value="${settings.retirementWithdrawalRate}" required><small>預設 0%；股息與其他收入不足時，最多可賣出資產的多少比例補足生活費。</small></label></div></details><p class="projection-auto-save" id="projectionSaveStatus" role="status">修改後會自動儲存</p></form><div id="retirementProjectionResult">${birthMonthConfirmed?retirementProjectionResult(projection):retirementBirthMonthRequiredResult()}</div></div><p class="projection-disclaimer">股息以目前持股近 12 個月已知配息推估；本試算固定推演到 100 歲，未計入稅費及市場波動，結果僅供規劃參考。</p></section>`;
 }
 const readTrendDataset=memoizeLatest((txs,caches,dateBasis,asOfDate,interval)=>{
   const daily=enrichTrendRows(calculateTrendHistory({transactions:txs,marketCaches:caches,dateBasis,asOfDate}));
@@ -683,7 +724,7 @@ function visibleTrendMilestones(milestones = []) { return milestones.filter(mile
 function trendEventTypeVisible(type) { const marker=TREND_EVENT_MARKER_SETTINGS.find(item=>item.type===type); return marker ? settings[marker.id] ?? true : true; }
 function visibleTrendMarkerEvents(events = []) { return events.filter(event => (event.isNew && (settings.showNewStockMarker ?? true)) || trendEventTypeVisible(event.type)); }
 function trendMilestoneSummary(milestones) { const visible=visibleTrendMilestones(milestones); return visible.length ? `<div class="trend-milestones${visible.length===1?' is-single':''}">${visible.map(trendMilestoneBanner).join('')}</div>` : ''; }
-function chartTooltip(item) { const comparison=trendState.frequency==='day'?'較前一交易日':'較上月',milestones=item.milestones||[],limit=trendTooltipEventLimit(),visibleEvents=item.events.slice(0,limit),remaining=item.events.length-visibleEvents.length,eventSections=visibleEvents.length?`<div class="trend-event-section"><b>${trendState.frequency==='day'?'當日':'本月'}交易 · ${item.events.length} 筆</b>${trendEventRows(visibleEvents)}${remaining>0?`<button type="button" class="trend-tooltip-more" data-trend-detail-date="${item.date}">查看全部 ${item.events.length} 筆</button>`:''}</div>`:'';return `<b class="trend-tooltip-date">${trendDateLabel(item.date)}</b>${trendMilestoneSummary(milestones)}<div class="trend-value-block"><span>目前持有市值${item.estimated?' · 估算':''}</span><strong>${fmt(item.market)} ${item.returnRate==null?'':`<em class="${item.returnRate>=0?'positive':'negative'}">(${fmtReturnPercent(item.returnRate)})</em>`}</strong></div><div class="trend-value-block trend-change-block"><span>${comparison}</span><strong class="${item.marketChange==null?'':item.marketChange>=0?'positive':'negative'}">${signedMoney(item.marketChange)} ${item.marketChangeRate==null?'':`<em>(${fmtReturnPercent(item.marketChangeRate)})</em>`}</strong></div>${eventSections}${item.missing.length?`<p class="trend-warning">${escapeHtml(item.missing.join('、'))} 缺少當期價格，以取得成本估算。</p>`:''}`; }
+function chartTooltip(item) { const comparison=trendState.frequency==='day'?'較前一交易日':'較上月',milestones=item.milestones||[],limit=trendTooltipEventLimit(),visibleEvents=item.events.slice(0,limit),remaining=item.events.length-visibleEvents.length,eventSections=visibleEvents.length?`<div class="trend-event-section"><b>${trendState.frequency==='day'?'當日':'本月'}交易 · ${item.events.length} 筆</b>${trendEventRows(visibleEvents)}${remaining>0?`<button type="button" class="trend-tooltip-more" data-trend-detail-date="${item.date}">查看全部 ${item.events.length} 筆</button>`:''}</div>`:'';return `<b class="trend-tooltip-date">${trendDateLabel(item.date)}</b>${trendMilestoneSummary(milestones)}${(item.splits||[]).map(event=>`<p class="split-row-note">${escapeHtml(event.symbol)} · ${escapeHtml(event.type)}（股數 × ${event.ratio.toFixed(4).replace(/0+$/,'').replace(/\.$/,'')}）</p>`).join('')}<div class="trend-value-block"><span>目前持有市值${item.estimated?' · 估算':''}</span><strong>${fmt(item.market)} ${item.returnRate==null?'':`<em class="${item.returnRate>=0?'positive':'negative'}">(${fmtReturnPercent(item.returnRate)})</em>`}</strong></div><div class="trend-value-block trend-change-block"><span>${comparison}</span><strong class="${item.marketChange==null?'':item.marketChange>=0?'positive':'negative'}">${signedMoney(item.marketChange)} ${item.marketChangeRate==null?'':`<em>(${fmtReturnPercent(item.marketChangeRate)})</em>`}</strong></div>${eventSections}${item.missing.length?`<p class="trend-warning">${escapeHtml(item.missing.join('、'))} 缺少當期價格，以取得成本估算。</p>`:''}`; }
 function trendDetailDrawer(item) { if(!item)return '';const newEvents=item.events.filter(event=>event.isNew),otherEvents=item.events.filter(event=>!event.isNew);return `<aside class="trend-detail-drawer" tabindex="-1" aria-label="${trendDateLabel(item.date)}交易明細"><div class="trend-detail-heading"><div><span>交易明細</span><strong>${trendDateLabel(item.date)}</strong></div><button type="button" class="trend-detail-close" data-trend-detail-close aria-label="關閉交易明細">×</button></div>${trendMilestoneSummary(item.milestones||[])}${newEvents.length?`<div class="trend-event-section is-new"><b>首次持有${newEvents.length>1?` · ${newEvents.length} 檔`:''}</b>${trendEventRows(newEvents)}</div>`:''}${otherEvents.length?`<div class="trend-event-section"><b>${trendState.frequency==='day'?'當日':'本月'}交易 · ${otherEvents.length} 筆</b>${trendEventRows(otherEvents)}</div>`:''}${!item.events.length?`<p class="trend-detail-empty">這個日期沒有交易紀錄。</p>`:''}</aside>`; }
 function trendScale(points) { const values=points.map(row=>row.market),min=Math.min(...values),max=Math.max(...values),span=Math.max(max-min,max*.04,1),roughStep=span*1.3/4,power=10**Math.floor(Math.log10(roughStep)),normal=roughStep/power,nice=normal<=1?1:normal<=2?2:normal<=5?5:10,step=nice*power,yMin=Math.max(0,Math.floor((min-span*.15)/step)*step),yMax=Math.ceil((max+span*.15)/step)*step;return {yMin,yMax:yMax<=yMin?yMin+step*4:yMax,ticks:Array.from({length:5},(_,i)=>yMin+(yMax-yMin)*i/4)}; }
 function isCompactTrendChart() { return typeof matchMedia==='function'&&matchMedia('(max-width: 520px)').matches; }
@@ -785,18 +826,21 @@ function openTrendDetail(index) { const item=trendSelection().points[Number(inde
 function openTrendDetailByDate(date) { trendDetailDate=date;repaintTrend();requestAnimationFrame(()=>document.querySelector('.trend-detail-drawer')?.focus()); }
 
 function emptyState() { return `<section class="empty"><div class="empty-icon" aria-hidden="true"></div><p class="eyebrow">從第一筆紀錄開始</p><h2>建立你的退休現金流地圖</h2><p>匯入 CSV 交易紀錄後，系統會在此瀏覽器計算持股、成本與退休進度。</p><div><button class="primary" id="emptyImport">匯入 CSV</button><a class="secondary download-link" href="./my-stock-transactions.csv" download="my-stock-transactions.csv">下載持股範例</a></div><small>範例含 11 筆交易，支援自行買進、定期定額、股息再投入與配股</small></section>`; }
+function adjustedTransactionQuantity(transaction) {
+  return splitAdjustedQuantity(transaction, cacheFor(transaction.symbol)?.splits, today());
+}
 function transactionGroups() {
   return [...new Set(transactions.map(t => t.symbol))].sort().map(symbol => {
     const rows = transactions.filter(t => t.symbol === symbol).sort((a,b) => b.date.localeCompare(a.date));
-    const quantity = rows.reduce((sum,t) => sum + Number(t.quantity), 0);
-    const totalCost = rows.reduce((sum,t) => sum + cost(t), 0);
+    const quantity = rows.reduce((sum,t) => sum + adjustedTransactionQuantity(t), 0);
+    const totalCost = rows.filter(t => t.date <= today()).reduce((sum,t) => sum + cost(t), 0);
     return { symbol, rows, quantity, totalCost, averageCost: quantity ? totalCost / quantity : null };
   });
 }
 function transactionReturn(transaction) {
   const latest = lastPrice(transaction.symbol);
   if (!latest) return { amount:null, percent:null };
-  return calculateUnrealizedReturn({ quantity:transaction.quantity, cost:cost(transaction), currentPrice:latest.close });
+  return calculateUnrealizedReturn({ quantity:adjustedTransactionQuantity(transaction), cost:cost(transaction), currentPrice:latest.close });
 }
 function fmtReturnPercent(value) {
   if (value == null || !Number.isFinite(value)) return '—';
@@ -821,7 +865,7 @@ function transactionsPage() {
   const undo = transactionUndoNotice();
   const banner = contextualStepBanner('transactions');
   const actions = `<div class="transaction-actions"><div class="transaction-page-actions"><button class="primary" data-add-transaction>新增交易</button><button class="secondary" data-transaction-import>匯入 CSV</button><button class="secondary" id="aiImportGuide">請 AI 整理</button></div><p class="transaction-import-help">先讓 AI 整理成標準 CSV，再匯入；資料只會儲存在此裝置。<a href="./my-stock-transactions.csv" download="my-stock-transactions.csv">下載持股範例</a></p></div>`;
-  const body = groups.length ? `${undo}<section class="panel transactions-panel"><div class="panel-title"><div><h2>交易紀錄</h2><p>依股票代號彙整；展開即可查看明細。</p></div>${actions}</div><div class="transaction-groups">${groups.map(group => {
+  const body = groups.length ? `${undo}<section class="panel transactions-panel"><div class="panel-title"><div><h2>交易紀錄</h2><p>股數及損益已依已知分割調整；明細保留原始交易。反分割零股以等值股數估算，未計零股現金結算。</p></div>${actions}</div><div class="transaction-groups">${groups.map(group => {
     const name = cacheFor(group.symbol)?.name;
     const latest = lastPrice(group.symbol);
     const marketValue = latest ? group.quantity * Number(latest.close) : null;
@@ -829,9 +873,9 @@ function transactionsPage() {
     return `<details class="transaction-group">
       <summary>
         <span class="group-symbol"><b>${escapeHtml(group.symbol)}</b>${name ? `<small>${escapeHtml(name)}</small>` : ''}</span>
-        <span class="group-metric group-quantity"><small>持有股數</small><b>${money.format(group.quantity)} 股</b></span>
+        <span class="group-metric group-quantity"><small>持有股數</small><b>${fmtShares(group.quantity)} 股</b></span>
         <span class="group-metric group-cost"><small>累積成本</small><b>${fmt(group.totalCost)}</b><small>平均 ${fmtAverageCost(group.averageCost)}</small></span>
-        <span class="group-metric group-latest"><small>最新價格</small><b>${latest ? fmtPerShare(latest.close) : '—'}</b>${latest ? `<small>${latest.date}</small>` : ''}</span>
+        <span class="group-metric group-latest"><small>最新價格</small><b>${latest ? fmtPerShare(latest.close) : '—'}</b>${latest ? `<small>${latest.date}${latest.rawClose != null && Number(latest.rawClose) !== Number(latest.close) ? ' · 分割換算' : ''}</small>` : ''}</span>
         <span class="group-metric group-market-value"><small>持股市值</small><b>${marketValue == null ? '等待價格資料' : fmt(marketValue)}</b></span>
         <span class="group-metric group-return"><small>未實現損益</small><b class="return-amount ${unrealized.amount == null ? '' : unrealized.amount >= 0 ? 'positive' : 'negative'}">${fmtSignedMoney(unrealized.amount)}</b><small class="return-percent ${unrealized.percent == null ? '' : unrealized.percent >= 0 ? 'positive' : 'negative'}">${fmtReturnPercentDetail(unrealized.percent)}</small></span>
         <span class="group-count">${group.rows.length} 筆 <i>⌄</i></span>
@@ -841,7 +885,7 @@ function transactionsPage() {
         const rowReturn = transactionReturn(t);
         const returnClass = rowReturn.amount == null ? '' : rowReturn.amount >= 0 ? 'positive' : 'negative';
         const label = `${escapeHtml(group.symbol)} 的${escapeHtml(ACQUISITIONS[t.acquisitionType] || '持股')}紀錄`;
-        return `<tr><td>${escapeHtml(t.date)}</td><td><span class="tag">${escapeHtml(ACQUISITIONS[t.acquisitionType] || '持股')}</span></td><td>${money.format(t.quantity)}</td><td>${t.price == null ? '—' : fmtPerShare(t.price)}</td><td>${Number(t.fee) ? fmt(t.fee) : '—'}</td><td>${fmt(cost(t))}</td><td class="return-value ${returnClass}"><b>${fmtSignedMoney(rowReturn.amount)}</b><small>${fmtReturnPercentDetail(rowReturn.percent)}</small></td><td><div class="row-actions"><button type="button" class="icon-btn edit" data-edit-transaction="${t.id}" aria-label="編輯 ${label}" title="編輯交易"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 20 4.2-1 10.9-10.9a2.1 2.1 0 0 0-3-3L5.2 16 4 20Z"/><path d="m14.8 6.3 3 3"/></svg></button><button type="button" class="icon-btn delete" data-id="${t.id}" aria-label="刪除 ${label}" title="刪除交易"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3m3 0-1 13H7L6 7m4 4v5m4-5v5"/></svg></button></div></td></tr>`;
+        return `<tr><td>${escapeHtml(t.date)}</td><td><span class="tag">${escapeHtml(ACQUISITIONS[t.acquisitionType] || '持股')}</span></td><td>${money.format(t.quantity)}${adjustedTransactionQuantity(t)!==Number(t.quantity)?`<small class="split-row-note">調整後 ${fmtShares(adjustedTransactionQuantity(t))} 股</small>`:""}</td><td>${t.price == null ? '—' : fmtPerShare(t.price)}</td><td>${Number(t.fee) ? fmt(t.fee) : '—'}</td><td>${fmt(cost(t))}</td><td class="return-value ${returnClass}"><b>${fmtSignedMoney(rowReturn.amount)}</b><small>${fmtReturnPercentDetail(rowReturn.percent)}</small></td><td><div class="row-actions"><button type="button" class="icon-btn edit" data-edit-transaction="${t.id}" aria-label="編輯 ${label}" title="編輯交易"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 20 4.2-1 10.9-10.9a2.1 2.1 0 0 0-3-3L5.2 16 4 20Z"/><path d="m14.8 6.3 3 3"/></svg></button><button type="button" class="icon-btn delete" data-id="${t.id}" aria-label="刪除 ${label}" title="刪除交易"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3m3 0-1 13H7L6 7m4 4v5m4-5v5"/></svg></button></div></td></tr>`;
       }).join('')}</tbody></table></div>
     </details>`;
   }).join('')}</div></section>` : `${undo}<section class="panel transactions-panel"><div class="panel-title"><div><h2>交易紀錄</h2><p>新增一筆交易，或一次匯入既有紀錄。</p></div>${actions}</div><div class="empty compact"><div class="empty-icon" aria-hidden="true"></div><h2>尚未有交易紀錄</h2><p>新增第一筆交易，或匯入既有 CSV，開始建立持股與成本紀錄。</p><div><button class="primary" data-add-transaction>新增第一筆交易</button><button class="secondary" data-transaction-import>匯入 CSV</button></div></div></section>`;
@@ -902,7 +946,7 @@ function dividendTooltipContent(month,symbol) {
   if(!rows.length) return '';
   const basisLabel=settings.dividendDateBasis==='EX_DIVIDEND_DATE' ? '除息日' : '發放日';
   const primaryDate=row=>settings.dividendDateBasis==='EX_DIVIDEND_DATE' ? row.exDate : row.paymentDate;
-  return `<div class="dividend-tooltip-rows compact">${rows.map(row=>`<div><span>${basisLabel} ${primaryDate(row) || '待確認'}<small>${money.format(row.eligible)} 股 × ${fmtPerShare(row.cash)}</small></span><strong>${fmt(row.amount)}${isUpcomingDividend(row)?'<small>預計</small>':''}</strong></div>`).join('')}</div>`;
+  return `<div class="dividend-tooltip-rows compact">${rows.map(row=>`<div><span>${basisLabel} ${primaryDate(row) || '待確認'}<small>${fmtShares(row.eligible)} 股 × ${fmtPerShare(row.cash)}</small></span><strong>${fmt(row.amount)}${isUpcomingDividend(row)?'<small>預計</small>':''}</strong></div>`).join('')}</div>`;
 }
 function bindDividendTooltip() {
   const tooltip=document.querySelector('#dividendTooltip');
@@ -951,10 +995,10 @@ function marketDataContent() {
   const years=[...new Set(months.map(month=>month.slice(0,4)))].sort().reverse();
   const availableMonths=months.filter(month=>month.startsWith(selectedYear)).map(month=>month.slice(5));
   const events=[...(stock.dividends || [])].filter(event=>Number(event.cash)>0 && (event.paymentDate || event.exDate)).sort((a,b)=>(b.paymentDate || b.exDate || '').localeCompare(a.paymentDate || a.exDate || ''));
-  const latest=prices[0], previous=prices[1], change=latest && previous ? Number(latest.close)-Number(previous.close) : null;
-  const changeRate=change != null && Number(previous.close) ? change/Number(previous.close)*100 : null;
+  const latest=prices[0], previous=prices[1], change=latest && previous ? Number(latest.close)-splitAdjustedPrice(previous, stock.splits, latest.date) : null;
+  const changeRate=change != null && Number(previous.close) ? change/splitAdjustedPrice(previous, stock.splits, latest.date)*100 : null;
   const selectedState=syncSummary.rows.find(row=>row.symbol===stock.symbol), selectedStatus=selectedState?.cachedOnly?'無持股・快取保留':selectedState?.errors.length?'部分同步失敗':selectedState?.priceReady&&selectedState?.dividendReady?'已檢查完成':'等待更新';
-  return `<section class="panel market-browser"><div class="panel-title market-browser-heading"><div><p class="eyebrow">公開資料快取</p><h2>依股票瀏覽市場資料</h2><p>選擇一檔股票後，可一起核對其每日價格與配息事件。</p></div><div class="market-stock-picker"><label for="marketSymbol">股票</label><select id="marketSymbol">${stocks.map(item=>`<option value="${item.symbol}" ${item.symbol===stock.symbol?'selected':''}>${item.symbol}${item.name ? ` · ${item.name}` : ''}</option>`).join('')}</select></div></div><div class="market-stock-summary"><span><b>${stock.symbol}</b>${stock.name ? ` ${stock.name}` : ''}</span><span>價格 ${money.format(prices.length)} 筆</span><span>配息 ${money.format(events.length)} 筆</span><span class="sync-chip ${selectedState?.errors.length?'has-error':'is-ready'}">${selectedStatus}</span>${latest ? `<span>最新收盤 <b>${fmtPerShare(latest.close)}</b> <small>${latest.date}</small> <em class="${change >= 0 ? 'positive' : 'negative'}">${change == null ? '' : `${change >= 0 ? '+' : ''}${fmtPerShareNumber(change)}（${changeRate >= 0 ? '+' : ''}${changeRate.toFixed(2)}%）`}</em></span>` : '<span>尚無可用收盤價</span>'}</div>${selectedState?.errors.length?`<div class="sync-inline-error" role="alert"><b>${stock.symbol} 尚有資料未更新</b><span>${selectedState.errors.map(escapeHtml).join('；')}。既有快取已保留，系統會自動重試。</span></div>`:''}</section><section class="panel table-panel market-data-table price-data-panel"><div class="panel-title market-table-heading"><div><h2>每日價格</h2><p>${selectedMonth ? `${selectedYear} 年 ${Number(selectedMonthNumber)} 月共 ${monthRows.length} 個交易日；價格為未還原之 OHLC 資料。` : '此股票尚無價格資料。'}</p></div>${months.length ? `<div class="market-date-picker"><label>年份<select id="marketPriceYear">${years.map(year=>`<option value="${year}" ${year===selectedYear?'selected':''}>${year} 年</option>`).join('')}</select></label><label>月份<select id="marketPriceMonth">${availableMonths.map(month=>`<option value="${month}" ${month===selectedMonthNumber?'selected':''}>${Number(month)} 月</option>`).join('')}</select></label></div>` : ''}</div>${monthRows.length ? `<div class="price-table-wrap"><table><thead><tr><th>日期</th><th>開盤</th><th>最高</th><th>最低</th><th>收盤</th><th>成交量</th></tr></thead><tbody>${monthRows.map(row=>`<tr><td>${row.date}</td><td>${fmtPerShare(row.open)}</td><td>${fmtPerShare(row.high)}</td><td>${fmtPerShare(row.low)}</td><td><b>${fmtPerShare(row.close)}</b></td><td>${row.volume == null ? '—' : money.format(row.volume)}</td></tr>`).join('')}</tbody></table></div>` : `<p class="market-empty">此月份沒有交易日資料。</p>`}</section><section class="panel table-panel market-data-table"><div class="panel-title"><div><h2>配息事件</h2><p>${events.length ? `${events.length} 筆 ${stock.symbol} 配息事件` : `${stock.symbol} 已檢查，目前沒有配息事件`}；資料來源：FinMind。</p></div></div>${events.length ? `<div class="price-table-wrap"><table><thead><tr><th>除息日</th><th>發放日</th><th>現金股利／股</th><th>股票股利</th><th>公告日</th></tr></thead><tbody>${events.map(event=>`<tr><td>${event.exDate || '—'}</td><td>${event.paymentDate || '—'}</td><td><b>${fmtPerShare(event.cash)}</b></td><td>${event.stock ? money.format(event.stock) : '—'}</td><td>${event.announcementDate || '—'}</td></tr>`).join('')}</tbody></table></div>` : `<p class="market-empty">查無配息不等於同步失敗；可由上方同步狀態確認。</p>`}</section>`;
+  return `<section class="panel market-browser"><div class="panel-title market-browser-heading"><div><p class="eyebrow">公開資料快取</p><h2>依股票瀏覽市場資料</h2><p>選擇一檔股票後，可一起核對其每日價格與配息事件。</p></div><div class="market-stock-picker"><label for="marketSymbol">股票</label><select id="marketSymbol">${stocks.map(item=>`<option value="${item.symbol}" ${item.symbol===stock.symbol?'selected':''}>${item.symbol}${item.name ? ` · ${item.name}` : ''}</option>`).join('')}</select></div></div><div class="market-stock-summary"><span><b>${stock.symbol}</b>${stock.name ? ` ${stock.name}` : ''}</span><span>價格 ${money.format(prices.length)} 筆</span><span>配息 ${money.format(events.length)} 筆</span><span class="sync-chip ${selectedState?.errors.length?'has-error':'is-ready'}">${selectedStatus}</span>${latest ? `<span>最新收盤 <b>${fmtPerShare(latest.close)}</b> <small>${latest.date}${latest.rawClose != null && Number(latest.rawClose) !== Number(latest.close) ? ' · 分割換算' : ''}</small> <em class="${change >= 0 ? 'positive' : 'negative'}">${change == null ? '' : `${change >= 0 ? '+' : ''}${fmtPerShareNumber(change)}（${changeRate >= 0 ? '+' : ''}${changeRate.toFixed(2)}%）`}</em></span>` : '<span>尚無可用收盤價</span>'}</div>${splitEventDetails(stock)}${selectedState?.errors.length?`<div class="sync-inline-error" role="alert"><b>${stock.symbol} 尚有資料未更新</b><span>${selectedState.errors.map(escapeHtml).join('；')}。既有快取已保留，系統會自動重試。</span></div>`:''}</section><section class="panel table-panel market-data-table price-data-panel"><div class="panel-title market-table-heading"><div><h2>每日價格</h2><p>${selectedMonth ? `${selectedYear} 年 ${Number(selectedMonthNumber)} 月共 ${monthRows.length} 個交易日；價格為未還原之 OHLC 資料。` : '此股票尚無價格資料。'}</p></div>${months.length ? `<div class="market-date-picker"><label>年份<select id="marketPriceYear">${years.map(year=>`<option value="${year}" ${year===selectedYear?'selected':''}>${year} 年</option>`).join('')}</select></label><label>月份<select id="marketPriceMonth">${availableMonths.map(month=>`<option value="${month}" ${month===selectedMonthNumber?'selected':''}>${Number(month)} 月</option>`).join('')}</select></label></div>` : ''}</div>${monthRows.length ? `<div class="price-table-wrap"><table><thead><tr><th>日期</th><th>開盤</th><th>最高</th><th>最低</th><th>收盤</th><th>成交量</th></tr></thead><tbody>${monthRows.map(row=>`<tr><td>${row.date}${(stock.splits||[]).some(event=>event.date===row.date)?'<small class="split-row-note">分割／面額變更</small>':''}</td><td>${fmtPerShare(row.open)}</td><td>${fmtPerShare(row.high)}</td><td>${fmtPerShare(row.low)}</td><td><b>${fmtPerShare(row.close)}</b></td><td>${row.volume == null ? '—' : money.format(row.volume)}</td></tr>`).join('')}</tbody></table></div>` : `<p class="market-empty">此月份沒有交易日資料。</p>`}</section><section class="panel table-panel market-data-table"><div class="panel-title"><div><h2>配息事件</h2><p>${events.length ? `${events.length} 筆 ${stock.symbol} 配息事件` : `${stock.symbol} 已檢查，目前沒有配息事件`}；資料來源：FinMind。</p></div></div>${events.length ? `<div class="price-table-wrap"><table><thead><tr><th>除息日</th><th>發放日</th><th>現金股利／股</th><th>股票股利</th><th>公告日</th></tr></thead><tbody>${events.map(event=>`<tr><td>${event.exDate || '—'}</td><td>${event.paymentDate || '—'}</td><td><b>${fmtPerShare(event.cash)}</b></td><td>${event.stock ? money.format(event.stock) : '—'}</td><td>${event.announcementDate || '—'}</td></tr>`).join('')}</tbody></table></div>` : `<p class="market-empty">查無配息不等於同步失敗；可由上方同步狀態確認。</p>`}</section>`;
 }
 function settingSwitch(id, title, description, checked, extraClass = '') { return `<label class="setting-switch ${extraClass}"><input type="checkbox" id="${id}" data-setting-control ${checked?'checked':''} /><span class="setting-switch-copy"><b>${title}</b><small>${description}</small></span><span class="setting-switch-track" aria-hidden="true"></span></label>`; }
 function trendEventMarkerSettingInputs() { return TREND_EVENT_MARKER_SETTINGS.map(({id,label})=>settingSwitch(id,label,'在走勢圖上標記這類交易。',settings[id] ?? true)).join(''); }
@@ -1273,6 +1317,7 @@ function bindOverviewBirthMonth() {
   form.addEventListener('submit',event=>{event.preventDefault();void update();});
 }
 function bind() {
+  if (page === 'stock-comparison') comparisonPage.bind();
   document.querySelectorAll('select, textarea, input:not([type="checkbox"]):not([type="radio"]):not([type="file"]):not([type="hidden"]):not([type="range"]):not([type="button"]):not([type="submit"]):not([type="reset"])').forEach(control => {
     control.classList.add('form-field');
     // Native inputs can match :focus-visible after a pointer click as well.
@@ -1483,4 +1528,15 @@ async function restore(file) {
 document.addEventListener('visibilitychange',()=>{if(!document.hidden){void maybeAutoSyncMarket();scheduleMarketSyncCheck();}});
 window.addEventListener('online',()=>{marketCalendarRetryAfter=null;void maybeAutoSyncMarket();scheduleMarketSyncCheck();});
 window.addEventListener('hashchange',syncPageFromHash);
+let comparisonResizeFrame = null;
+window.addEventListener('resize', () => {
+  if (page !== 'stock-comparison' || comparisonResizeFrame) return;
+  comparisonResizeFrame = requestAnimationFrame(() => {
+    comparisonResizeFrame = null;
+    if (page !== 'stock-comparison' || dataMaintenance) return;
+    const focusedId = document.activeElement?.id;
+    comparisonPage.resize();
+    if (focusedId) document.getElementById(focusedId)?.focus({ preventScroll:true });
+  });
+});
 load();

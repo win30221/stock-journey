@@ -1,3 +1,4 @@
+import { splitFactor, splitAdjustedPrice } from './splits.js';
 import { ACQUISITIONS } from '../lib/constants.js';
 import { calculateTransactionCost } from './portfolio.js';
 import { calculateDividendReceipts } from './dividends.js';
@@ -10,7 +11,7 @@ export function calculateTrendHistory({ transactions, marketCaches, dateBasis, a
   const prices = Object.fromEntries(symbols.map(symbol => [
     symbol,
     [...(cachesBySymbol.get(symbol)?.prices || [])]
-      .filter(price => price.date >= first)
+      .filter(price => price.date >= first && Number.isFinite(Number(price.close)) && Number(price.close) > 0)
       .sort((a, b) => a.date.localeCompare(b.date)),
   ]));
   const dividends = calculateDividendReceipts({ transactions, marketCaches, dateBasis })
@@ -24,6 +25,7 @@ export function calculateTrendHistory({ transactions, marketCaches, dateBasis, a
     ...transactions.map(transaction => transaction.date),
     ...Object.values(prices).flat().map(price => price.date),
     ...Object.keys(dividends),
+    ...marketCaches.filter(cache => symbols.includes(cache.symbol)).flatMap(cache => (cache.splits || []).map(event => event.date)),
   ])].filter(date => date >= first && date <= asOfDate).sort();
   const firstDates = transactions.reduce((map, transaction) => {
     if (!map[transaction.symbol] || transaction.date < map[transaction.symbol]) {
@@ -41,7 +43,10 @@ export function calculateTrendHistory({ transactions, marketCaches, dateBasis, a
   const bookValues = Object.fromEntries(symbols.map(symbol => [symbol, 0]));
   let external = 0, reinvested = 0;
 
-  return dates.map(date => {
+  return dates.map((date, dateIndex) => {
+    for (const symbol of symbols) {
+      quantities[symbol] *= splitFactor(cachesBySymbol.get(symbol)?.splits, dates[dateIndex - 1] || first, date);
+    }
     for (const symbol of symbols) {
       while (cursor[symbol] < prices[symbol].length && prices[symbol][cursor[symbol]].date <= date) {
         latest[symbol] = prices[symbol][cursor[symbol]++];
@@ -65,7 +70,7 @@ export function calculateTrendHistory({ transactions, marketCaches, dateBasis, a
     const missing = [];
     const market = symbols.reduce((sum, symbol) => {
       if (!quantities[symbol]) return sum;
-      if (latest[symbol]) return sum + quantities[symbol] * Number(latest[symbol].close);
+      if (latest[symbol]) return sum + quantities[symbol] * splitAdjustedPrice(latest[symbol], cachesBySymbol.get(symbol)?.splits, date);
       missing.push(symbol);
       return sum + bookValues[symbol];
     }, 0);
@@ -79,6 +84,7 @@ export function calculateTrendHistory({ transactions, marketCaches, dateBasis, a
     }));
     return {
       date, market, external, reinvested, dailyInvest, dailyReinvest,
+      splits:marketCaches.filter(cache => symbols.includes(cache.symbol)).flatMap(cache => (cache.splits || []).filter(event => event.date === date).map(event => ({...event, symbol:cache.symbol}))),
       dividends: dividends[date] || 0,
       missing,
       estimated: missing.length > 0,
@@ -101,6 +107,7 @@ export function aggregateTrendMonths(daily) {
       estimated:Boolean(previous?.estimated || row.estimated),
       transactions:(previous?.transactions || 0) + row.transactions,
       events:[...(previous?.events || []), ...row.events],
+      splits:[...(previous?.splits || []), ...(row.splits || [])],
       milestones:[],
     });
   }

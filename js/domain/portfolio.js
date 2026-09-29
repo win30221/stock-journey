@@ -1,3 +1,4 @@
+import { splitAdjustedQuantity } from './splits.js';
 // Pure portfolio calculations. No DOM, IndexedDB, or network dependencies.
 export function calculateTransactionCost(transaction) {
   return transaction.acquisitionType === 'STOCK_DIVIDEND'
@@ -14,12 +15,13 @@ export function calculateUnrealizedReturn({ quantity, cost, currentPrice }) {
   return { amount, percent:basis > 0 ? amount / basis * 100 : null };
 }
 
-export function calculateHoldingGroups(transactionRows) {
+export function calculateHoldingGroups(transactionRows, marketCaches = [], asOfDate = '9999-12-31') {
   const groups = new Map();
-  transactionRows.forEach(row => {
+  const splits = new Map(marketCaches.map(cache => [cache.symbol, cache.splits || []]));
+  transactionRows.filter(row => !row.date || row.date <= asOfDate).forEach(row => {
     const group = groups.get(row.symbol) || { symbol:row.symbol, qty:0, acquisition:0, external:0, reinvested:0 };
     const transactionCost = calculateTransactionCost(row);
-    group.qty += Number(row.quantity);
+    group.qty += splitAdjustedQuantity(row, splits.get(row.symbol), asOfDate);
     group.acquisition += transactionCost;
     if (['MANUAL_BUY', 'RECURRING_INVESTMENT'].includes(row.acquisitionType)) group.external += transactionCost;
     if (row.acquisitionType === 'DIVIDEND_REINVESTMENT') group.reinvested += transactionCost;

@@ -13,7 +13,7 @@ function input() {
       symbol:'0050',
       prices:[{ date:'2026-09-04', close:15 }, { date:'2026-01-30', close:12 }],
       dividends:[{ exDate:'2026-02-01', paymentDate:'2026-03-01', cash:2 }],
-      dividendCoverageFrom:'2025-01-01', dividendCheckedThrough:'2026-09-04',
+      dividendCoverageFrom:'2025-01-01', dividendCheckedThrough:'2026-09-04', splitCheckedThrough:'2026-09-04',
     }],
     dividendDateBasis:'PAYMENT_DATE', asOfDate:'2026-09-07', requiredThroughDate:'2026-09-04',
   };

@@ -10,7 +10,7 @@ test('a new holding fetches dividends from before its purchase for the trailing-
   const fetched = history.filter(row => row.exDate >= plan.dividendStart);
   const forecast = calculateProjectedAnnualDividends({
     transactions:[{ symbol:'0050', date:'2026-09-01', quantity:100 }],
-    marketCaches:[{ symbol:'0050', dividends:fetched, dividendCoverageFrom:plan.dividendStart, dividendCheckedThrough:target }],
+    marketCaches:[{ symbol:'0050', dividends:fetched, dividendCoverageFrom:plan.dividendStart, dividendCheckedThrough:target, splitCheckedThrough:target }],
     asOfDate:target,
   });
   assert.equal(plan.priceStart, '2026-09-01');
@@ -23,7 +23,7 @@ test('dividend sync upgrades a recent-purchase cache and refreshes the entire re
   const { createMarketSyncPlan } = await import('../js/domain/market.js');
   const recentCache = {
     priceCoverageFrom:'2026-09-01', priceCheckedThrough:'2026-09-04',
-    dividendCoverageFrom:'2026-09-01', dividendCheckedThrough:'2026-09-04',
+    dividendCoverageFrom:'2026-09-01', dividendCheckedThrough:'2026-09-04', splitCheckedThrough:'2026-09-04',
   };
   const repair = createMarketSyncPlan({ cache:recentCache, transactionStart:'2026-09-01', target:'2026-09-04' });
   assert.equal(repair.priceNeeded, false);
@@ -54,7 +54,7 @@ test('dividend forecasts distinguish absent coverage, covered zero dividends, an
   assert.equal(missing.annual, 0);
   assert.equal(missing.coverageComplete, false);
   assert.deepEqual(missing.incompleteSymbols, ['0050']);
-  const cache = { symbol:'0050', dividends:[], dividendCoverageFrom:'2025-03-03', dividendCheckedThrough:'2026-09-04' };
+  const cache = { symbol:'0050', dividends:[], dividendCoverageFrom:'2025-03-03', dividendCheckedThrough:'2026-09-04', splitCheckedThrough:'2026-09-04' };
   const covered = calculateProjectedAnnualDividends({ transactions, marketCaches:[cache], asOfDate:'2026-09-06', requiredThroughDate:'2026-09-04' });
   assert.equal(covered.annual, 0);
   assert.equal(covered.coverageComplete, true);
@@ -71,7 +71,7 @@ test('forecast coverage checks every current holding without requiring future ho
       { symbol:'2330', date:'2026-09-02', quantity:10 },
       { symbol:'0056', date:'2027-01-01', quantity:10 },
     ],
-    marketCaches:[{ symbol:'0050', dividends:[], dividendCoverageFrom:'2025-01-01', dividendCheckedThrough:'2026-09-04' }],
+    marketCaches:[{ symbol:'0050', dividends:[], dividendCoverageFrom:'2025-01-01', dividendCheckedThrough:'2026-09-04', splitCheckedThrough:'2026-09-04' }],
     asOfDate:'2026-09-04',
   });
   assert.deepEqual(forecast.incompleteSymbols, ['2330']);

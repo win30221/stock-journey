@@ -25,7 +25,7 @@ const transaction = {
   acquisitionType:'MANUAL_BUY', price:100, fee:0,
 };
 
-async function createHarness(t, { fetchData, beforeSave } = {}) {
+async function createHarness(t, { fetchData, beforeSave, splitData = async () => [] } = {}) {
   const storage = new Map(), timers = new Set(), listeners = new Map();
   const calls = [], writes = [], events = [], errors = [], alerts = [], notices = [];
   const fixedNow = '2026-09-04T12:00:00Z';
@@ -70,7 +70,7 @@ async function createHarness(t, { fetchData, beforeSave } = {}) {
       calls.push(call);
       return {
         ok:true,
-        json:async () => ({ status:200, data:fetchData
+        json:async () => ({ status:200, data:call.dataset === 'TaiwanStockSplitPrice' ? await splitData(call) : fetchData
           ? await fetchData(call)
           : call.dataset === 'TaiwanStockPrice' ? [{ date:'2026-09-04', close:110 }] : [] }),
       };
@@ -163,8 +163,8 @@ test('clearing market cache cancels both response bodies before clearing and doe
   await started.promise;
   await harness.click('clearMarket');
   await sync;
-  assert.equal(harness.calls.length, 2);
-  assert.ok(harness.calls.every(call => call.signal.aborted));
+  assert.equal(harness.calls.filter(call => call.dataset !== 'TaiwanStockSplitPrice').length, 2);
+  assert.ok(harness.calls.filter(call => call.dataset !== 'TaiwanStockSplitPrice').every(call => call.signal.aborted));
   assert.deepEqual(await harness.read('marketCache'), []);
   const [settings] = await harness.read('settings');
   assert.ok(settings.marketAutoSyncPausedUntil);
@@ -196,7 +196,7 @@ test('restoring a backup during sync cancels stale data and retains the restored
   body.resolve([rawDividend(99)]);
   await nextTurn();
   assert.deepEqual(harness.alerts, []);
-  assert.ok(harness.calls.every(call => call.signal.aborted));
+  assert.ok(harness.calls.filter(call => call.dataset !== 'TaiwanStockSplitPrice').every(call => call.signal.aborted));
   assert.deepEqual((await harness.read('transactions')).map(row => [row.id,row.symbol,row.quantity]), [['restored-tx','2330',7]]);
   assert.equal((await harness.read('settings'))[0].retirementOtherMonthlyIncome, 3456);
   assert.equal((await harness.read('settings'))[0].lastSuccessfulMarketSyncDate, null);
@@ -218,7 +218,7 @@ test('clearing all data during sync prevents an old request from repopulating th
   await sync;
   body.resolve([]);
   await nextTurn();
-  assert.ok(harness.calls.every(call => call.signal.aborted));
+  assert.ok(harness.calls.filter(call => call.dataset !== 'TaiwanStockSplitPrice').every(call => call.signal.aborted));
   assert.deepEqual(await harness.read('transactions'), []);
   assert.deepEqual(await harness.read('marketCache'), []);
   assert.equal((await harness.read('settings'))[0].lastSuccessfulMarketSyncDate, null);
@@ -246,4 +246,43 @@ test('data replacement waits for an already-started repository write and then cl
   assert.ok((await harness.read('settings'))[0].marketAutoSyncPausedUntil);
   assert.equal(harness.state().busy, false);
   assert.deepEqual(harness.errors, []);
+});
+
+test('sync records exact split ratios, replaces corrected snapshots and retains old events on failure', async t => {
+  let splitRows=[{stock_id:'0050',date:'2026-06-18',before_price:188.65,after_price:47.16}], failed=false;
+  const harness=await createHarness(t,{splitData:async()=>{
+    if(failed)throw Error('分割服務無法連線');
+    return splitRows;
+  }});
+  await harness.sync();
+  let [cache]=await harness.read('marketCache');
+  assert.equal(cache.splits[0].ratio,4);
+  assert.equal(cache.splitCheckedThrough,'2026-09-04');
+  failed=true;
+  await harness.sync();
+  [cache]=await harness.read('marketCache');
+  assert.equal(cache.splits[0].ratio,4);
+  assert.match(cache.splitError,/FinMind 回傳格式無法解析/);
+  assert.equal(cache.syncStatus,'PARTIAL');
+  assert.equal(cache.prices.at(-1).close,110,'price updates remain independent');
+  failed=false;splitRows=[];
+  await harness.sync();
+  [cache]=await harness.read('marketCache');
+  assert.deepEqual(cache.splits,[],'cancelled events disappear after successful full refresh');
+  assert.equal(cache.splitError,null);
+  assert.equal(cache.syncStatus,'READY');
+});
+
+test('clearing data during split-list loading cancels it before any cache can be committed', async t => {
+  const pending=deferred(), started=deferred();
+  const harness=await createHarness(t,{splitData:async()=>{started.resolve();return pending.promise;}});
+  const sync=harness.sync();
+  await started.promise;
+  await harness.click('clearMarket');
+  await sync;
+  assert.ok(harness.calls.find(call=>call.dataset==='TaiwanStockSplitPrice').signal.aborted);
+  pending.resolve([{stock_id:'0050',date:'2026-06-18',before_price:188.65,after_price:47.16}]);
+  await nextTurn();
+  assert.deepEqual(await harness.read('marketCache'),[]);
+  assert.equal(harness.writes.filter(write=>write.name==='marketCache').length,0);
 });

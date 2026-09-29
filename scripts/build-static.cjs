@@ -9,6 +9,8 @@ const sourceFiles = [
   'js/lib/date.js',
   'js/lib/csv.js',
   'js/lib/storage.js',
+  'js/domain/splits.js',
+  'js/domain/comparison.js',
   'js/domain/portfolio.js',
   'js/domain/retirement.js',
   'js/domain/dividends.js',
@@ -28,6 +30,7 @@ const sourceFiles = [
   'js/app/portfolio-model.js',
   'js/app/async-state.js',
   'js/app/stock-search.js',
+  'js/app/comparison-page.js',
   'app.js',
 ];
 

@@ -56,6 +56,7 @@ assert.equal(bootstrap.priceStart, '2026-08-28', '今日才買進也要取得上
 assert.equal(bootstrap.dividendStart, '2025-02-24', '首次取得持股也應回補 550 天股息資料，才能估算全年現金流');
 
 const readyCache = {
+  splitCheckedThrough:'2026-08-28', splits:[],
   symbol: '0050', prices: [{ date: '2026-08-28', close: 100 }], dividends: [],
   priceCoverageFrom: '2026-08-28', priceCheckedThrough: '2026-08-28',
   dividendCoverageFrom: '2025-02-24', dividendCheckedThrough: '2026-08-28', syncErrors: [],

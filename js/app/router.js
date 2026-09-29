@@ -5,6 +5,7 @@ export const PAGE_IDS = Object.freeze([
   'transactions',
   'dividends',
   'market-data',
+  'stock-comparison',
   'settings',
 ]);
 

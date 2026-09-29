@@ -17,3 +17,11 @@ test('signed money makes gains and losses immediately distinguishable', async ()
   assert.equal(fmtSignedMoney(0), '0 元');
   assert.equal(fmtSignedMoney(null), '—');
 });
+
+test('reverse split equivalent shares retain fractional precision without changing money formatting', async () => {
+  const {fmtShares,fmt} = await import('../js/lib/format.js');
+  assert.equal(fmtShares(100/6),'16.66666667');
+  assert.equal(fmtShares(400),'400');
+  assert.equal(fmtShares(null),'—');
+  assert.equal(fmt(100/6),'17 元');
+});

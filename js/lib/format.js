@@ -1,5 +1,7 @@
 // Presentation-only helpers. Future UI components can reuse these unchanged.
 export const money = new Intl.NumberFormat('zh-TW', { maximumFractionDigits: 0 });
+const shareCount = new Intl.NumberFormat('zh-TW', { maximumFractionDigits: 8 });
+export const fmtShares = value => value == null ? '—' : shareCount.format(Number(value));
 export const fmt = value => value == null ? '—' : `${money.format(Math.round(Number(value)))} 元`;
 export const fmtSignedMoney = value => {
   if (value == null || !Number.isFinite(Number(value))) return '—';

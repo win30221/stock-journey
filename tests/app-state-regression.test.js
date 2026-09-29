@@ -85,7 +85,7 @@ test('retirement screens distinguish incomplete dividend history from a verified
   f.run(`transactions=[{id:'t',date:'2026-09-01',symbol:'0050',quantity:100,price:10,fee:0,acquisitionType:'MANUAL_BUY'}];marketTradingDates=['2026-09-04'];marketCaches=[{symbol:'0050',prices:[{date:'2026-09-04',close:10}],dividends:[]}];settings.retirementBirthMonth='1986-09';settings.retirementBirthMonthConfirmed=true;`);
   assert.match(f.run('retirementCalculatorPage()'),/資料不足不代表沒有配息/);
   assert.match(f.run('overviewRetirementSnapshot()'),/配息資料待補齊/);
-  f.run("marketCaches=[{...marketCaches[0],dividendCoverageFrom:'2025-01-01',dividendCheckedThrough:'2026-09-04'}]");
+  f.run("marketCaches=[{...marketCaches[0],dividendCoverageFrom:'2025-01-01',dividendCheckedThrough:'2026-09-04', splitCheckedThrough:'2026-09-04'}]");
   assert.equal(f.run('dividendForecast().coverageComplete'),true);
   assert.match(f.run('retirementCalculatorPage()'),/id="projectionDividendAmount">0 元/);
 });
@@ -113,7 +113,7 @@ test('retirement market refresh updates asset sources and results without replac
     settingsStore.replace({ ...createDefaultSettings(), retirementBirthMonth:'1986-09', retirementBirthMonthConfirmed:true });
     transactions = [{ id:'t', date:'2026-09-01', symbol:'0050', quantity:100, price:100, fee:0, acquisitionType:'MANUAL_BUY' }];
     marketTradingDates = ['2026-09-04'];
-    marketCaches = [{ symbol:'0050', prices:[], dividends:[], dividendCoverageFrom:'2025-01-01', dividendCheckedThrough:'2026-09-04' }];
+    marketCaches = [{ symbol:'0050', prices:[], dividends:[], dividendCoverageFrom:'2025-01-01', dividendCheckedThrough:'2026-09-04', splitCheckedThrough:'2026-09-04' }];
     let refreshedProjection;
     bindProjectionChart = projection => { refreshedProjection = projection; };
     render = () => { throw Error('Market refresh must preserve the existing form'); };

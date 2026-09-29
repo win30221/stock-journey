@@ -175,6 +175,8 @@ export function createStockSearch({
   }
 
   return {
+    suggestions: stockSuggestionRows,
+    getStatus: () => ({ status:stockCatalogStatus, error:stockCatalogError }),
     bind: bindStockCombobox,
     ensureCatalog: ensureStockCatalog,
     setCatalog(rows) {
