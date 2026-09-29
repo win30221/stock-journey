@@ -127,6 +127,7 @@ nav button.active i { color: var(--blue); }
 
 main { width: 100%; max-width: 1360px; margin: 0 auto; padding: 30px clamp(20px, 4vw, 48px) 56px; }
 .facebook-community {
+  position: relative;
   display: grid;
   flex-shrink: 0;
   gap: 12px;
@@ -154,6 +155,30 @@ main { width: 100%; max-width: 1360px; margin: 0 auto; padding: 30px clamp(20px,
   font-weight: 700;
   text-decoration: none;
   touch-action: manipulation;
+}
+.facebook-community::after {
+  content: "";
+  position: absolute;
+  inset: -1px;
+  border: 1px solid var(--blue);
+  border-radius: inherit;
+  box-shadow: 0 0 0 3px var(--blue-soft), 0 0 18px 3px var(--blue);
+  opacity: .18;
+  pointer-events: none;
+}
+@keyframes facebook-community-breathe {
+  0%, 100% { opacity: .18; }
+  50% { opacity: .65; }
+}
+@media (prefers-reduced-motion: no-preference) {
+  .facebook-community::after {
+    animation: facebook-community-breathe 2s ease-in-out infinite;
+  }
+}
+.facebook-community:hover::after,
+.facebook-community:focus-within::after {
+  animation: none;
+  opacity: .3;
 }
 .facebook-community-link:hover { border-color: var(--blue); text-decoration: underline; }
 .facebook-community-link:active { background: var(--blue-soft); }
