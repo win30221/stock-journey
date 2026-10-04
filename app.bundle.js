@@ -301,9 +301,28 @@ function splitCoverageComplete(cache, through) {
 }
 
 // Source: js/domain/comparison.js
-function calculateStockComparison({ symbols, marketCaches, startDate, endDate }) {
+function normaliseComparisonDividends(rows) {
+  return rows.map(row => ({
+    cash: Number(row.cash ?? (Number(row.CashEarningsDistribution || 0) + Number(row.CashStatutorySurplus || 0))),
+    stock: Number(row.stock ?? (Number(row.StockEarningsDistribution || 0) + Number(row.StockStatutorySurplus || 0))),
+    exDate: row.exDate || row.CashExDividendTradingDate || null,
+    stockExDate: row.stockExDate || row.StockExDividendTradingDate || null,
+  })).filter(row => row.cash > 0 || row.stock > 0);
+}
+
+function dividendCoverageComplete(cache, from, through) {
+  return Boolean(!cache?.dividendError && cache?.dividendCoverageFrom <= from
+    && cache?.dividendCheckedThrough >= through);
+}
+
+function calculateStockComparison({ symbols, marketCaches, startDate, endDate, reinvestDividends = false, reinvest = false, mode }) {
   if (!isIsoCalendarDate(startDate) || !isIsoCalendarDate(endDate) || startDate >= endDate) throw Error('請選擇有效日期，結束日期須晚於開始日期。');
   if (symbols.length < 2 || symbols.length > 5 || new Set(symbols).size !== symbols.length) throw Error('請選擇 2～5 檔不同股票。');
+  const calculationMode = mode ?? (reinvestDividends || reinvest ? 'total' : 'price');
+  if (!['price', 'cash', 'stock', 'total'].includes(calculationMode)) throw Error('未知的比較方式。');
+  const shouldReinvest = ['cash', 'total'].includes(calculationMode);
+  const includeStock = ['stock', 'total'].includes(calculationMode);
+  const includeDividends = includeStock || shouldReinvest;
   const prepared = symbols.map(symbol => {
     const cache = marketCaches.find(row => row.symbol === symbol);
     const prices = new Map((cache?.prices || []).filter(row => isIsoCalendarDate(row.date) && row.date >= startDate && row.date <= endDate && Number(row.close) > 0 && Number.isFinite(Number(row.close))).map(row => [row.date, row]));
@@ -315,14 +334,77 @@ function calculateStockComparison({ symbols, marketCaches, startDate, endDate })
   const actualStart = common[0], actualEnd = common.at(-1);
   for (const { symbol, cache } of prepared) {
     if (!splitCoverageComplete(cache, actualEnd)) throw Error(`${symbol} 分割資料尚未確認，請重新比較。`);
+    if (includeDividends && !dividendCoverageComplete(cache, actualStart, actualEnd)) throw Error(`${symbol} 股息資料尚未確認，請重新比較。`);
   }
   const dates = [...new Set(prepared.flatMap(item => [...item.prices.keys()]))].filter(date => date >= actualStart && date <= actualEnd).sort();
   const series = prepared.map(({ symbol, cache, prices }) => {
-    const base = splitAdjustedPrice(prices.get(actualStart), cache.splits, actualEnd);
-    const values = dates.map(date => prices.has(date) ? (splitAdjustedPrice(prices.get(date), cache.splits, actualEnd) / base - 1) * 100 : null);
-    return { symbol, name:cache.name || symbol, values, change:values.at(-1), missing:values.filter(value => value === null).length, events:(cache.splits || []).filter(event => event.date > actualStart && event.date <= actualEnd) };
+    const splitEvents = (cache?.splits || []).filter(event => event.date > actualStart && event.date <= actualEnd);
+    const dividendEvents = [];
+    if (includeDividends) {
+      for (const div of cache.dividends || []) {
+        for (const [kind, date, amount] of [
+          ['cash', div.exDate, shouldReinvest ? Number(div.cash) : 0],
+          ['stock', div.stockExDate, includeStock ? Number(div.stock) : 0],
+        ]) {
+          if (!(amount > 0)) continue;
+          if (!isIsoCalendarDate(date)) throw Error(symbol + ' 股息日期資料不足，無法計算。');
+          if (date <= actualStart || date > actualEnd) continue;
+          if (kind === 'cash' && !prices.has(date)) throw Error(symbol + ' ' + date + ' 除息日缺少收盤價，無法計算再投入。');
+          dividendEvents.push({ date, cash: kind === 'cash' ? amount : 0, stock: kind === 'stock' ? amount : 0 });
+        }
+      }
+      dividendEvents.sort((a, b) => a.date.localeCompare(b.date));
+    }
+
+    let values;
+    if (!includeDividends) {
+      const base = splitAdjustedPrice(prices.get(actualStart), cache?.splits, actualEnd);
+      values = dates.map(date => prices.has(date) ? (splitAdjustedPrice(prices.get(date), cache?.splits, actualEnd) / base - 1) * 100 : null);
+    } else {
+      let currentShares = 1;
+      let lastTradedDate = actualStart;
+      const startPrice = Number(prices.get(actualStart).close);
+      values = dates.map(date => {
+        if (!prices.has(date)) return null;
+        if (date === actualStart) return 0;
+        const windowSplits = (cache?.splits || [])
+          .filter(e => e.date > lastTradedDate && e.date <= date)
+          .map(e => ({ type: 'split', date: e.date, ratio: Number(e.ratio) }));
+        const windowDivs = dividendEvents
+          .filter(e => e.date > lastTradedDate && e.date <= date)
+          .map(e => ({ type: 'div', date: e.date, cash: e.cash, stock: e.stock }));
+        const windowEvents = [...windowSplits, ...windowDivs];
+        const eventDates = [...new Set(windowEvents.map(event => event.date))].sort();
+        const closePrice = Number(prices.get(date).close);
+        for (const eventDate of eventDates) {
+          const sameDay = windowEvents.filter(event => event.date === eventDate);
+          for (const event of sameDay.filter(event => event.type === 'split')) {
+            currentShares *= event.ratio;
+          }
+          // All distributions on one date use the same eligible shares.
+          const eligibleShares = currentShares;
+          const cash = sameDay.reduce((sum, event) => sum + (event.cash || 0), 0);
+          const stock = sameDay.reduce((sum, event) => sum + (event.stock || 0), 0);
+          currentShares += eligibleShares * stock / 10;
+          if (cash) currentShares += eligibleShares * cash / Number(prices.get(eventDate).close);
+        }
+        lastTradedDate = date;
+        const currentValue = currentShares * closePrice;
+        return (currentValue / startPrice - 1) * 100;
+      });
+    }
+
+    return {
+      symbol,
+      name: cache?.name || symbol,
+      values,
+      change: values.at(-1),
+      missing: values.filter(value => value === null).length,
+      events: splitEvents,
+      dividendEvents,
+    };
   });
-  return { dates, actualStart, actualEnd, requestedStart:startDate, requestedEnd:endDate, series };
+  return { dates, actualStart, actualEnd, requestedStart: startDate, requestedEnd: endDate, reinvestDividends: shouldReinvest, mode: calculationMode, series };
 }
 
 // Source: js/domain/portfolio.js
@@ -1638,6 +1720,7 @@ function createComparisonPage({ stockSearch, fetchData, getCaches, getTargetDate
   const task = createCancellableTask();
   const colors = ['#087e9b', '#7945cc', '#b45309', '#2563eb', '#be185d'];
   let selected = [], start = '', end = '', query = '', error = '', progress = '', result = null, revision = 0;
+  let reinvest = false, includeStock = false;
   let plotWidth = 1000;
   let sessionCaches = [], hidden = new Set(), activeSuggestion = -1, focusIndex = 0;
   const percent = value => value == null ? '—' : `${value >= 0 ? '+' : ''}${value.toFixed(2)}%`;
@@ -1648,6 +1731,29 @@ function createComparisonPage({ stockSearch, fetchData, getCaches, getTargetDate
     result = null;
     error = '';
     void task.cancel();
+  }
+
+  function calculationMode() {
+    return reinvest ? (includeStock ? 'total' : 'cash') : (includeStock ? 'stock' : 'price');
+  }
+
+  function resultLabel() {
+    return { price: '累積漲跌幅', cash: '含現金股息再投入報酬', stock: '含配股報酬', total: '含息總報酬' }[result.mode];
+  }
+
+  async function setOptions(cash, stock) {
+    if (reinvest === cash && includeStock === stock) return;
+    const rerun = Boolean(result) || task.busy;
+    reinvest = cash;
+    includeStock = stock;
+    const version = ++revision;
+    result = null;
+    error = '';
+    repaint();
+    try { await task.cancel(); } catch { /* The obsolete request cannot update this selection. */ }
+    if (version !== revision) return;
+    if (rerun) await compare();
+    else repaint();
   }
 
   function suggestions() {
@@ -1692,7 +1798,7 @@ function createComparisonPage({ stockSearch, fetchData, getCaches, getTargetDate
     if (selected.length < 2) error = '請加入至少 2 檔股票。';
     else if (!start || !end || start >= end) error = '結束日期須晚於開始日期。';
     if (error) { repaint(); return; }
-    const version = ++revision, stocks = [...selected], from = start, through = end;
+    const version = ++revision, stocks = [...selected], from = start, through = end, mode = calculationMode();
     result = null;
     try {
       const pending = task.run(async job => {
@@ -1702,17 +1808,54 @@ function createComparisonPage({ stockSearch, fetchData, getCaches, getTargetDate
         job.check();
         const caches = [];
         for (const stock of stocks) {
-          progress = `取得 ${stock.symbol} 每日價格（${caches.length + 1} / ${stocks.length}）`;
+          progress = `取得 ${stock.symbol} 每日價格${mode !== 'price' ? '與股息' : ''}（${caches.length + 1} / ${stocks.length}）`;
           repaint();
           const cached = [...sessionCaches, ...getCaches()].find(cache => cache.symbol === stock.symbol && cache.priceCoverageFrom <= from && cache.priceCheckedThrough >= through);
-          const prices = cached ? cached.prices : (await fetchData('TaiwanStockPrice', stock.symbol, from, through, { signal:job.signal })).map(row => ({ date:row.date, close:Number(row.close) }));
+          // Portfolio caches use an older dividend shape; only reuse this page's full snapshots.
+          const dividendCache = sessionCaches.find(cache => cache.symbol === stock.symbol);
+          const hasPrice = Boolean(cached && cached.priceCoverageFrom <= from && cached.priceCheckedThrough >= through);
+          const hasDiv = Boolean(dividendCache && dividendCache.dividendCheckedThrough >= target);
+          const needPrice = !hasPrice;
+          const needDiv = mode !== 'price' && !hasDiv;
+          const [priceRows, divRows] = await Promise.all([
+            needPrice ? fetchData('TaiwanStockPrice', stock.symbol, from, through, { signal:job.signal }) : Promise.resolve(null),
+            needDiv ? fetchData('TaiwanStockDividend', stock.symbol, '1990-01-01', '2100-01-01', { signal:job.signal }) : Promise.resolve(null),
+          ]);
           job.check();
+          const prices = needPrice ? priceRows.map(row => ({ date:row.date, close:Number(row.close) })) : cached.prices;
           const verifiedThrough = prices.reduce((latest, row) => row.date <= through && row.date > latest && Number.isFinite(Number(row.close)) && Number(row.close) > 0 ? row.date : latest, target);
-          caches.push({ symbol:stock.symbol, name:stock.name || cached?.name, prices, priceCoverageFrom:from, priceCheckedThrough:through < verifiedThrough ? through : verifiedThrough, splits:normaliseSplitEvents(splitRows, stock.symbol, verifiedThrough), splitCheckedThrough:verifiedThrough });
+          let dividends = dividendCache?.dividends || [];
+          let dividendCoverageFrom = dividendCache?.dividendCoverageFrom || null;
+          let dividendCheckedThrough = dividendCache?.dividendCheckedThrough || null;
+          if (needDiv) {
+            if (!Array.isArray(divRows)) throw Error('股息資料格式錯誤，請重新比較。');
+            dividends = normaliseComparisonDividends(divRows);
+            // Include announced record dates beyond the chart end; filter by ex-date in the domain.
+            dividendCoverageFrom = '1990-01-01';
+            dividendCheckedThrough = target;
+          }
+          caches.push({
+            symbol: stock.symbol,
+            name: stock.name || cached?.name,
+            prices,
+            priceCoverageFrom: from,
+            priceCheckedThrough: through < verifiedThrough ? through : verifiedThrough,
+            splits: normaliseSplitEvents(splitRows, stock.symbol, verifiedThrough),
+            splitCheckedThrough: verifiedThrough,
+            dividends,
+            dividendCoverageFrom,
+            dividendCheckedThrough,
+          });
         }
         job.check();
         if (version !== revision) return;
-        result = calculateStockComparison({ symbols:stocks.map(stock => stock.symbol), marketCaches:caches, startDate:from, endDate:through });
+        result = calculateStockComparison({
+          symbols: stocks.map(stock => stock.symbol),
+          marketCaches: caches,
+          startDate: from,
+          endDate: through,
+          mode,
+        });
         sessionCaches = caches;
         hidden = new Set();
         focusIndex = result.dates.length - 1;
@@ -1737,7 +1880,7 @@ function createComparisonPage({ stockSearch, fetchData, getCaches, getTargetDate
     const ticks = Array.from({ length:5 }, (_, i) => lower + i / 4 * (upper - lower));
     const labels = plotWidth < 550 ? [0, result.dates.length - 1] : [...new Set([0, Math.floor((result.dates.length - 1) / 2), result.dates.length - 1])];
     return `<div id="comparisonChart" class="comparison-chart" tabindex="0" role="group" aria-label="百分比走勢圖；左右方向鍵查看日期，Home 與 End 跳至起訖日">
-      <svg viewBox="0 0 ${plotWidth} 360" role="img" aria-label="分割調整後累積漲跌幅，多檔從 0% 開始；下方提供完整資料表">
+      <svg viewBox="0 0 ${plotWidth} 360" role="img" aria-label="分割調整後${resultLabel()}，多檔從 0% 開始；下方提供完整資料表">
       ${ticks.map(tick => `<line x1="55" x2="${plotWidth - 20}" y1="${y(tick)}" y2="${y(tick)}" class="comparison-grid"/><text x="45" y="${y(tick) + 5}" text-anchor="end">${tick.toFixed(1)}%</text>`).join('')}
       <line x1="55" x2="${plotWidth - 20}" y1="${y(0)}" y2="${y(0)}" class="comparison-zero"/>
       ${visible.map(series => {
@@ -1756,13 +1899,13 @@ function createComparisonPage({ stockSearch, fetchData, getCaches, getTargetDate
   }
 
   function focusDetails() {
-    return `<div class="comparison-tooltip-heading"><b>${result.dates[focusIndex]}</b><small>累積漲跌幅</small></div>${result.series.filter(series => !hidden.has(series.symbol)).map(series => `<div class="comparison-tooltip-row" style="--series-color:${colorFor(series.symbol)}"><span><b>${escapeHtml(series.symbol)}</b><small>${escapeHtml(series.name === series.symbol ? '' : series.name)}</small></span><strong>${percent(series.values[focusIndex])}</strong></div>`).join('')}`;
+    return `<div class="comparison-tooltip-heading"><b>${result.dates[focusIndex]}</b><small>${resultLabel()}</small></div>${result.series.filter(series => !hidden.has(series.symbol)).map(series => `<div class="comparison-tooltip-row" style="--series-color:${colorFor(series.symbol)}"><span><b>${escapeHtml(series.symbol)}</b><small>${escapeHtml(series.name === series.symbol ? '' : series.name)}</small></span><strong>${percent(series.values[focusIndex])}</strong></div>`).join('')}`;
   }
 
   function summaryMarkup() {
     const ranking = [...result.series].sort((a, b) => b.change - a.change);
-    return `<div class="comparison-summary-heading"><h3>期間股價變化</h3><span>點選卡片顯示或隱藏曲線</span></div>
-      <div class="comparison-summary" role="group" aria-label="期間股價變化與曲線顯示">${ranking.map(series => {
+    return `<div class="comparison-summary-heading"><h3>${result.mode === 'price' ? '期間股價變化' : '期間' + resultLabel()}</h3><span>點選卡片顯示或隱藏曲線</span></div>
+      <div class="comparison-summary" role="group" aria-label="${resultLabel()}與曲線顯示">${ranking.map(series => {
         const dash = ['', '8 4', '3 4', '10 4 2 4', '4 2'][selected.findIndex(stock => stock.symbol === series.symbol)];
         return `<button type="button" data-toggle-series="${escapeHtml(series.symbol)}" aria-pressed="${!hidden.has(series.symbol)}" style="--series-color:${colorFor(series.symbol)}">
           <span class="comparison-summary-label"><svg width="24" height="8" viewBox="0 0 24 8" aria-hidden="true"><path d="M0 4 H24" stroke="currentColor" stroke-width="3" stroke-dasharray="${dash}"/></svg><span>${escapeHtml(series.symbol)} ${escapeHtml(series.name === series.symbol ? '' : series.name)}</span></span>
@@ -1775,9 +1918,11 @@ function createComparisonPage({ stockSearch, fetchData, getCaches, getTargetDate
   function resultsMarkup() {
     if (!result) return `<section class="panel comparison-empty"><div class="comparison-empty-icon" aria-hidden="true">↗</div><h2>從 0% 開始，看見表現差異</h2><p>加入股票並選擇日期，即可比較每日走勢。<br>不需要交易紀錄或設定投入金額。</p></section>`;
     const events = result.series.flatMap(series => series.events.map(event => ({ ...event, symbol:series.symbol })));
-    return `<section class="panel comparison-results"><div class="panel-title"><div><p class="eyebrow">累積漲跌幅</p><h2>走勢比較</h2><p>實際共同區間：${result.actualStart} ～ ${result.actualEnd} · 分割調整後，不含股息</p></div></div>${result.actualStart !== start || result.actualEnd !== end ? '<p class="split-warning">已使用所選範圍內共同可用的股價資料；資料尚未更新、休市或上市前無資料的日期不納入比較。</p>' : ''}${summaryMarkup()}${chart()}
+    const dividendEvents = result.series.flatMap(series => (series.dividendEvents || []).map(event => ({ ...event, symbol:series.symbol }))).sort((a, b) => a.date.localeCompare(b.date));
+    return `<section class="panel comparison-results"><div class="panel-title"><div><p class="eyebrow">${resultLabel()}</p><h2>走勢比較</h2><p>實際共同區間：${result.actualStart} ～ ${result.actualEnd} · 分割調整後 · ${resultLabel()}</p></div></div>${result.actualStart !== start || result.actualEnd !== end ? '<p class="split-warning">已使用所選範圍內共同可用的股價資料；資料尚未更新、休市或上市前無資料的日期不納入比較。</p>' : ''}${summaryMarkup()}${chart()}
       ${events.length ? `<details class="split-events"><summary>期間分割事件（${events.length}）</summary><ul>${events.map(event => `<li>${event.date} · ${escapeHtml(event.symbol)} · ${escapeHtml(event.type)} · 股數 × ${Number(event.ratio.toPrecision(8))}</li>`).join('')}</ul></details>` : ''}
-      <details class="comparison-data"><summary>查看每日比較數據</summary><div class="price-table-wrap" tabindex="0" role="region" aria-label="每日比較數據，可橫向捲動"><table><caption>累積漲跌百分比；— 表示缺資料</caption><thead><tr><th>日期</th>${result.series.map(series => `<th>${escapeHtml(series.symbol)}</th>`).join('')}</tr></thead><tbody>${result.dates.map((date, index) => `<tr><th scope="row">${date}</th>${result.series.map(series => `<td>${percent(series.values[index])}</td>`).join('')}</tr>`).join('')}</tbody></table></div></details></section>`;
+      ${dividendEvents.length ? `<details class="dividend-events"><summary>期間股利事件（${dividendEvents.length}）</summary><ul>${dividendEvents.map(event => `<li>${event.date} · ${escapeHtml(event.symbol)} · ${event.cash ? `現金 ${event.cash} 元（除息日按收盤價再投入）` : `配股 ${event.stock} 元（除權日增加 ${Number((event.stock / 10).toPrecision(8))} 股／股）`}</li>`).join('')}</ul></details>` : ''}
+      <details class="comparison-data"><summary>查看每日比較數據</summary><div class="price-table-wrap" tabindex="0" role="region" aria-label="每日比較數據，可橫向捲動"><table><caption>${resultLabel()}（%）；— 表示缺資料</caption><thead><tr><th>日期</th>${result.series.map(series => `<th>${escapeHtml(series.symbol)}</th>`).join('')}</tr></thead><tbody>${result.dates.map((date, index) => `<tr><th scope="row">${date}</th>${result.series.map(series => `<td>${percent(series.values[index])}</td>`).join('')}</tr>`).join('')}</tbody></table></div></details></section>`;
   }
 
   function render() {
@@ -1785,8 +1930,8 @@ function createComparisonPage({ stockSearch, fetchData, getCaches, getTargetDate
     return `<div class="comparison-page"><section class="panel comparison-controls"><div class="panel-title"><div><h2>選擇比較標的</h2><p>最多 5 檔股票或 ETF，未持有也能比較。</p></div><span class="comparison-count">${selected.length} / 5</span></div>
       <div class="comparison-search"><label for="comparisonQuery">股票代號或名稱</label><div class="comparison-search-row"><input id="comparisonQuery" value="${escapeHtml(query)}" placeholder="例如 0050、台積電" autocomplete="off" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="comparisonSuggestions"/><button type="button" class="secondary" id="comparisonAdd">加入</button></div><div id="comparisonSuggestions" class="comparison-suggestions" role="listbox" aria-label="股票搜尋結果" hidden></div></div>
       <div class="comparison-chips">${selected.map(stock => `<button type="button" data-remove-comparison="${escapeHtml(stock.symbol)}" style="--series-color:${colorFor(stock.symbol)}" aria-label="移除 ${escapeHtml(stock.symbol)} ${escapeHtml(stock.name)}"><span></span>${escapeHtml(stock.symbol)} ${escapeHtml(stock.name)} <b aria-hidden="true">×</b></button>`).join('')}</div>
-      <form id="comparisonForm"><div class="comparison-dates"><label for="comparisonStart">開始日期<input id="comparisonStart" type="date" value="${start}" required/></label><span aria-hidden="true">—</span><label for="comparisonEnd">結束日期<input id="comparisonEnd" type="date" value="${end}" required/></label><button class="primary" type="submit" ${task.busy ? 'disabled aria-busy="true"' : ''}>${task.busy ? '比較中…' : '開始比較'}</button></div><div class="comparison-ranges">${[['30','近一月'],['90','近三月'],['365','近一年'],['year','今年以來']].map(([key, label]) => `<button type="button" data-comparison-range="${key}">${label}</button>`).join('')}</div></form>
-      ${error ? `<p class="operation-error" role="alert">${escapeHtml(error)}</p>` : ''}${progress ? `<p role="status">${escapeHtml(progress)}</p>` : ''}<p class="comparison-method">自動校正已知分割、反分割與面額變更；不含現金股息、配股、減資與交易費用。資料來源：FinMind。比較清單僅保留於本次開啟。</p></section>${resultsMarkup()}</div>`;
+      <form id="comparisonForm"><div class="comparison-dates"><label for="comparisonStart">開始日期<input id="comparisonStart" type="date" value="${start}" required/></label><span aria-hidden="true">—</span><label for="comparisonEnd">結束日期<input id="comparisonEnd" type="date" value="${end}" required/></label><button class="primary" type="submit" ${task.busy ? 'disabled aria-busy="true"' : ''}>${task.busy ? '比較中…' : '開始比較'}</button></div><div class="comparison-ranges">${[['30','近一月'],['90','近三月'],['365','近一年'],['year','今年以來']].map(([key, label]) => `<button type="button" data-comparison-range="${key}">${label}</button>`).join('')}</div><div class="comparison-options" role="group" aria-label="計算選項"><button type="button" id="comparisonReinvest" aria-pressed="${reinvest}">計入現金股息再投入</button><button type="button" id="comparisonStock" aria-pressed="${includeStock}">計入配股</button></div></form>
+      ${error ? `<p class="operation-error" role="alert">${escapeHtml(error)}</p>` : ''}${progress ? `<p role="status">${escapeHtml(progress)}</p>` : ''}<p class="comparison-method">兩項皆未選取時只比較股價。自動校正已知分割、反分割與面額變更。${reinvest ? '現金股息假設於除息日按收盤價買入小數股，並非實際入帳日交易。' : '不計現金股息。'}${includeStock ? '配股於除權日增加股數，股票股利每 10 元換算 1 股。' : '不計配股。'}不含減資、稅費與交易費用。資料來源：FinMind；比較清單僅保留於本次開啟。</p></section>${resultsMarkup()}</div>`;
   }
 
   function bind() {
@@ -1828,6 +1973,12 @@ function createComparisonPage({ stockSearch, fetchData, getCaches, getTargetDate
       invalidate(); repaint();
       document.querySelector(`[data-comparison-range="${button.dataset.comparisonRange}"]`)?.focus();
     }));
+    for (const id of ['comparisonReinvest', 'comparisonStock']) {
+      document.querySelector('#' + id)?.addEventListener('click', async () => {
+        await setOptions(id === 'comparisonReinvest' ? !reinvest : reinvest, id === 'comparisonStock' ? !includeStock : includeStock);
+        document.querySelector('#' + id)?.focus();
+      });
+    }
     document.querySelector('#comparisonForm')?.addEventListener('submit', event => { event.preventDefault(); void compare(); });
     document.querySelectorAll('[data-toggle-series]').forEach(button => button.addEventListener('click', () => {
       const symbol = button.dataset.toggleSeries;
@@ -1873,11 +2024,18 @@ function createComparisonPage({ stockSearch, fetchData, getCaches, getTargetDate
     void stockSearch.ensureCatalog().then(() => { if (document.querySelector('#comparisonQuery') === input && document.activeElement === input) renderSuggestions(); });
   }
 
-  return { render, bind, compare, resize() { if (result) repaint(); }, async reset() {
-    revision++;
-    await task.cancel();
-    sessionCaches = []; result = null; selected = []; query = ''; error = ''; progress = ''; start = ''; end = '';
-  } };
+  return {
+    render, bind, compare,
+    resize() { if (result) repaint(); },
+    getReinvest() { return reinvest; },
+    setReinvest(value) { return setOptions(Boolean(value), includeStock); },
+    setOptions,
+    async reset() {
+      revision++;
+      await task.cancel();
+      sessionCaches = []; result = null; selected = []; query = ''; error = ''; progress = ''; start = ''; end = ''; reinvest = false; includeStock = false;
+    },
+  };
 }
 
 // Source: app.js
@@ -2413,7 +2571,7 @@ function splitEventDetails(stock) {
 function header() {
   if (page === 'stock-comparison') return '<header><div><p class="eyebrow">額外工具</p><h1>股票比較</h1><p>同一段時間，從同一個起點看表現。</p></div></header>';
   const marketSummary=marketSyncSummary();
-  const subtitle=page==='stock-comparison' ? '選擇股票與日期，比較分割調整後的累積漲跌幅。' : page==='budget' ? '從生活支出建立退休月現金流目標。' : page==='retirement-calculator' ? '結合持股、生活預算與投入計畫，推算退休時間。' : page==='transactions' ? '管理交易紀錄，系統會自動計算持股與成本。' : page==='settings' ? '顯示方式與本機資料管理。' : `市場資料：${marketHeaderLabel(marketSummary)}`;
+  const subtitle=page==='stock-comparison' ? '選擇股票與日期，比較分割調整後的累積漲跌幅或含息總報酬。' : page==='budget' ? '從生活支出建立退休月現金流目標。' : page==='retirement-calculator' ? '結合持股、生活預算與投入計畫，推算退休時間。' : page==='transactions' ? '管理交易紀錄，系統會自動計算持股與成本。' : page==='settings' ? '顯示方式與本機資料管理。' : `市場資料：${marketHeaderLabel(marketSummary)}`;
   const action='';
   return `<header><div><p class="eyebrow">存股退休</p><h1>${PAGE_LABELS[page]}</h1><p class="market-as-of" role="status" aria-live="polite" aria-atomic="true">${subtitle}</p></div><div class="header-actions">${action}</div></header>`;
 }

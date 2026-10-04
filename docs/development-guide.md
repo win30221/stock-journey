@@ -125,9 +125,9 @@ Next.js 靜態匯出可繼續使用靜態主機，但應規劃透過網址開啟
 - 市場快取新增 `splits`、`splitCheckedThrough`、`splitError`。成功更新以完整快照取代，處理修訂／取消；失敗保留舊事件並標記不完整。舊快取缺少確認日期時會自動補查。這些欄位是可重建快取，JSON 個人資料備份 schema 維持 3。
 - 持股、市值、逐筆與群組損益、資產走勢、股息收取及預估股息都使用相同分割規則。`calculateHoldingGroups(transactions, marketCaches, asOfDate)` 支援日期與事件輸入；舊單參數呼叫仍可用。`calculatePortfolioSnapshot` 的持股和最新價格現以 `asOfDate` 截取，價格再換成該日股數基準；已公告的未來股息仍保留供畫面呈現。
 - 配息領取按除息資格日持股計算，不以發放日股數代替。近 12 個月預估股息會把歷史每股配息換算成目前股數基準；配息與分割資料都完整時才顯示完整退休試算。行情表保留未還原 OHLC，分割日加標記，行情漲跌幅改用同基準的前收盤價。
-- `js/domain/comparison.js`：計算 2～5 檔的共同起訖交易日，以分割調整後價格起算 0%。中間缺價為 `null`，不補 0、不畫連接線。只比較價格，不含現金股息、股票股利或減資還原，不可稱為含息總報酬。
-- `js/app/comparison-page.js`：搜尋、多選、日期、圖表與浮動 tooltip。依賴透過參數注入；直接沿用 `stockSearch.suggestions()`／`resolve()` 與 FinMind service。無持股亦可查詢；價格暫存在本次頁面工作階段，不寫入持股快取或交易。清除／還原時由 `replaceDataSafely()` 取消比較請求並清空工作階段快取，避免舊回應復活。
-- 股票比較使用 `#stock-comparison`，側欄位於「額外工具」。圖表同時提供鍵盤、觸控、文字摘要和每日資料表。切換日期／標的會清除舊結果並取消請求；分割查詢失敗會阻止產生誤導曲線。
+- `js/domain/comparison.js`：計算 2～5 檔的共同起訖交易日，以分割調整後價格起算 0%。中間缺價為 `null`，不補 0、不畫連接線。支援 `mode: price | cash | stock | total`，分別為純股價、現金再投入、配股、兩者皆含；未傳 mode 時保留 `reinvestDividends`／`reinvest` 的舊布林入口（true 對應 total）。`normaliseComparisonDividends(rows)` 加總盈餘及公積股利，分別保留 `exDate` 與 `stockExDate`。現金於除息日收盤價買入小數股，股票股利於除權日以每 10 元換算 1 股；同日所有股利使用相同資格股數，不讓同日新股再次領息。現金事件缺當日價格、所選股利缺日期或覆蓋不足時停止計算；其他缺價日保留曲線缺口。
+- `js/app/comparison-page.js`：搜尋、多選、日期、股息再投入切換、圖表與浮動 tooltip。依賴透過參數注入；直接沿用 `stockSearch.suggestions()`／`resolve()` 與 FinMind service。提供現金再投入與配股兩個獨立按鈕，均使用 aria-pressed。任一開啟時查詢 `TaiwanStockDividend`（1990-01-01 至 2100-01-01），涵蓋來源已公告的完整資料，避免 API 的權利分派基準日篩選漏掉圖表期末除息；覆蓋僅確認至傳入的市場日期，不宣稱未來資料完整。比較股利只沿用本頁工作階段的完整格式，不沿用持股頁舊快取。切換選項先取消舊工作，等待結束後以固定 mode 重新計算；revision 防止清除／日期修改後復活。成功快照在工作階段內重用，清除或重新開啟會重新取得公告修訂。清除／還原時由 `replaceDataSafely()` 取消比較請求並清空工作階段快取，避免舊回應復活。
+- 股票比較使用 `#stock-comparison`，側欄位於「額外工具」。圖表同時提供鍵盤、觸控、文字摘要和每日資料表。切換日期／標的會清除舊結果並取消請求；分割或股息查詢失敗會阻止產生誤導曲線。
 - 原本已把分割股數人工當作「配股」記入的資料不會自動刪除或猜測修正；畫面明確提醒核對，避免重複加股。
 
 新增回歸在 `tests/splits-comparison.test.js` 與 `tests/sync-lifecycle-regression.test.js`，涵蓋分割同日買進、多次分割／反分割、舊價格換算、股息基準、浮動 tooltip、缺價、失敗重試與同步取消。根目錄三份過時測試入口改為轉用 `tests/` 的維護版本，避免繼續測試舊版拼接方式。

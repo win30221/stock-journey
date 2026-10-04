@@ -100,13 +100,13 @@ test('existing transaction and market views use corrected quantities and split-d
   assert.equal(f.run('projectionInput().currentAssets'),10000);
 });
 
-async function comparisonHarness(t, fetchData) {
+async function comparisonHarness(t, fetchData, existingCaches = []) {
   const {createComparisonPage} = await import('../js/app/comparison-page.js');
   const f=createAppFixture(t);
-  for (const id of ['comparisonQuery','comparisonAdd','comparisonSuggestions','comparisonStart','comparisonEnd','comparisonForm']) f.element(id);
+  for (const id of ['comparisonQuery','comparisonAdd','comparisonSuggestions','comparisonStart','comparisonEnd','comparisonForm','comparisonReinvest','comparisonStock']) f.element(id);
   const catalog=[{symbol:'0050',name:'元大台灣50'},{symbol:'2330',name:'台積電'}];
   const search={suggestions:q=>catalog.filter(s=>s.symbol.includes(q)||s.name.includes(q)),resolve:q=>catalog.find(s=>s.symbol===q||s.name===q),getStatus:()=>({status:'ready'}),ensureCatalog:async()=>catalog};
-  const page=createComparisonPage({stockSearch:search,fetchData,getCaches:()=>[],getTargetDate:()=> '2026-06-03',repaint:()=>{},isActive:()=>true,document:f.doc});
+  const page=createComparisonPage({stockSearch:search,fetchData,getCaches:()=>existingCaches,getTargetDate:()=> '2026-06-03',repaint:()=>{},isActive:()=>true,document:f.doc});
   page.render();page.bind();
   function add(query) { const input=f.nodes.get('#comparisonQuery');input.value=query;input.fire('input');f.nodes.get('#comparisonAdd').fire('click'); }
   function date(id,value) {const node=f.nodes.get('#'+id);node.value=value;node.fire('change');}
@@ -240,4 +240,311 @@ test('comparison date fields do not impose the market-calendar maximum and later
   assert.match(h.page.render(),/資料尚未更新/);
   await h.page.compare();
   assert.equal(requests.length,4,'querying beyond known coverage must allow new prices to arrive');
+});
+
+test('calculateStockComparison calculates exact cash and stock dividend reinvestment with split coordination', async () => {
+  const { calculateStockComparison } = await import('../js/domain/comparison.js');
+  const divStock = cache({
+    symbol: '0050',
+    splits: [event('2026-06-02', 4)],
+    splitCheckedThrough: '2026-06-03',
+    prices: [quote('2026-06-01', 100), quote('2026-06-02', 25), quote('2026-06-03', 25)],
+    dividends: [{ exDate: '2026-06-02', cash: 1, stock: 0 }],
+    dividendCoverageFrom: '2026-06-01',
+    dividendCheckedThrough: '2026-06-03',
+  });
+  const normalStock = cache({
+    symbol: '2330',
+    splits: [],
+    splitCheckedThrough: '2026-06-03',
+    prices: [quote('2026-06-01', 100), quote('2026-06-02', 100), quote('2026-06-03', 100)],
+    dividends: [{ exDate: '2026-06-02', cash: 5, stock: 0 }],
+    dividendCoverageFrom: '2026-06-01',
+    dividendCheckedThrough: '2026-06-03',
+  });
+
+  // Price-only comparison
+  const priceResult = calculateStockComparison({
+    symbols: ['0050', '2330'],
+    marketCaches: [divStock, normalStock],
+    startDate: '2026-06-01',
+    endDate: '2026-06-03',
+    reinvestDividends: false,
+  });
+  assert.equal(priceResult.reinvestDividends, false);
+  assert.equal(priceResult.series[0].change, 0); // 0050: 100 -> split 4:1 -> 25 = 0%
+  assert.equal(priceResult.series[1].change, 0); // 2330: 100 -> 100 -> 100 = 0%
+
+  // Reinvested comparison
+  const reinvestResult = calculateStockComparison({
+    symbols: ['0050', '2330'],
+    marketCaches: [divStock, normalStock],
+    startDate: '2026-06-01',
+    endDate: '2026-06-03',
+    reinvestDividends: true,
+  });
+  assert.equal(reinvestResult.reinvestDividends, true);
+  // 0050: 1 share -> split to 4 shares -> 4 * $1 = $4 div -> 4 / $25 = 0.16 new shares -> 4.16 shares * $25 = $104 -> +4%
+  assert.ok(Math.abs(reinvestResult.series[0].change - 4) < 1e-8);
+  assert.equal(reinvestResult.series[0].dividendEvents.length, 1);
+  // 2330: 1 share -> 1 * $5 = $5 div -> 5 / $100 = 0.05 new shares -> 1.05 shares * $100 = $105 -> +5%
+  assert.ok(Math.abs(reinvestResult.series[1].change - 5) < 1e-8);
+  assert.equal(reinvestResult.series[1].dividendEvents.length, 1);
+
+  // Stock dividend test
+  const stockDivStock = cache({
+    symbol: '2884',
+    splits: [],
+    splitCheckedThrough: '2026-06-03',
+    prices: [quote('2026-06-01', 100), quote('2026-06-02', 100), quote('2026-06-03', 100)],
+    dividends: [{ stockExDate: '2026-06-02', cash: 0, stock: 1 }], // 1 NTD stock div = 0.1 shares
+    dividendCoverageFrom: '2026-06-01',
+    dividendCheckedThrough: '2026-06-03',
+  });
+  const stockDivResult = calculateStockComparison({
+    symbols: ['0050', '2884'],
+    marketCaches: [divStock, stockDivStock],
+    startDate: '2026-06-01',
+    endDate: '2026-06-03',
+    reinvestDividends: true,
+  });
+  // 2884: 1 share -> +0.1 shares = 1.1 shares * $100 = $110 -> +10%
+  assert.ok(Math.abs(stockDivResult.series[1].change - 10) < 1e-8);
+
+  // Missing dividend coverage fails closed
+  const brokenDivStock = cache({
+    symbol: '2330',
+    dividendError: '網路連線異常',
+    prices: [quote('2026-06-01', 100), quote('2026-06-03', 100)],
+  });
+  assert.throws(
+    () => calculateStockComparison({
+      symbols: ['0050', '2330'],
+      marketCaches: [divStock, brokenDivStock],
+      startDate: '2026-06-01',
+      endDate: '2026-06-03',
+      reinvestDividends: true,
+    }),
+    /股息資料尚未確認/
+  );
+});
+
+test('comparison UI toggles dividend reinvestment, fetches dividends and reflects in markup', async t => {
+  const calls = [];
+  const h = await comparisonHarness(t, async (dataset, symbol) => {
+    calls.push({ dataset, symbol });
+    if (dataset === 'TaiwanStockSplitPrice') return [];
+    if (dataset === 'TaiwanStockDividend') {
+      return symbol === '0050'
+        ? [{ CashEarningsDistribution: 2, CashExDividendTradingDate: '2026-06-02', CashDividendPaymentDate: '2026-06-10' }]
+        : [{ CashEarningsDistribution: 5, CashExDividendTradingDate: '2026-06-02', CashDividendPaymentDate: '2026-06-10' }];
+    }
+    return [quote('2026-06-01', 100), quote('2026-06-02', 100), quote('2026-06-03', 100)];
+  });
+
+  // Independent toggle buttons expose their state
+  assert.match(h.page.render(), /id="comparisonReinvest"[^>]*aria-pressed="false"/);
+
+  // Initial comparison without reinvestment (price only)
+  await h.page.compare();
+  assert.equal(calls.filter(c => c.dataset === 'TaiwanStockDividend').length, 0);
+  assert.match(h.page.render(), /分割調整後 · 累積漲跌幅/);
+  assert.match(h.page.render(), /期間股價變化/);
+
+  // Enable reinvestment
+  await h.page.setReinvest(true);
+  await h.page.compare();
+  assert.equal(calls.filter(c => c.dataset === 'TaiwanStockDividend').length, 2);
+  assert.match(h.page.render(), /分割調整後 · 含現金股息再投入報酬/);
+  assert.match(h.page.render(), /含現金股息再投入報酬/);
+  assert.match(h.page.render(), /期間含現金股息再投入報酬/);
+  assert.match(h.page.render(), /期間股利事件/);
+
+  // Disable reinvestment again - reuses session prices without new network requests
+  const priceCallsBefore = calls.filter(c => c.dataset === 'TaiwanStockPrice').length;
+  const divCallsBefore = calls.filter(c => c.dataset === 'TaiwanStockDividend').length;
+  await h.page.setReinvest(false);
+  await h.page.compare();
+  assert.equal(calls.filter(c => c.dataset === 'TaiwanStockPrice').length, priceCallsBefore, 'switching reinvestment off should reuse session prices');
+  assert.equal(calls.filter(c => c.dataset === 'TaiwanStockDividend').length, divCallsBefore, 'switching reinvestment off should not fetch dividends');
+  assert.match(h.page.render(), /分割調整後 · 累積漲跌幅/);
+
+  // Reset clears reinvestment state
+  await h.page.setReinvest(true);
+  await h.page.reset();
+  assert.equal(h.page.getReinvest(), false);
+});
+
+test('independent cash and stock options calculate four distinct returns and separate ex-dates', async () => {
+  const { calculateStockComparison, normaliseComparisonDividends } = await import('../js/domain/comparison.js');
+  const dividends = normaliseComparisonDividends([{
+    CashEarningsDistribution: 2, CashStatutorySurplus: 3,
+    StockEarningsDistribution: 0.5, StockStatutorySurplus: 0.5,
+    CashExDividendTradingDate: '2026-06-02', StockExDividendTradingDate: '2026-06-03',
+  }]);
+  const stocks = ['0050', '2330'].map(symbol => cache({
+    symbol, splits: [], dividends,
+    prices: [quote('2026-06-01', 100), quote('2026-06-02', 100), quote('2026-06-03', 100)],
+  }));
+  for (const [mode, expected, dayTwo] of [['price', 0, 0], ['cash', 5, 5], ['stock', 10, 0], ['total', 15.5, 5]]) {
+    const result = calculateStockComparison({ symbols: ['0050', '2330'], marketCaches: stocks, startDate: '2026-06-01', endDate: '2026-06-03', mode });
+    assert.ok(Math.abs(result.series[0].change - expected) < 1e-8, mode);
+    assert.ok(Math.abs(result.series[0].values[1] - dayTwo) < 1e-8, mode);
+  }
+  stocks[0].dividends = [{ cash: 5, stock: 1, exDate: '2026-06-02', stockExDate: '2026-06-02' }];
+  const together = calculateStockComparison({ symbols: ['0050', '2330'], marketCaches: stocks, startDate: '2026-06-01', endDate: '2026-06-03', mode: 'total' });
+  assert.ok(Math.abs(together.series[0].change - 15) < 1e-8, 'same-day distributions use the same eligible shares');
+});
+
+test('cash reinvestment rejects missing ex-date quotes and unverified dividend coverage', async () => {
+  const { calculateStockComparison } = await import('../js/domain/comparison.js');
+  const first = cache({
+    splits: [event('2026-06-03', 2)],
+    prices: [quote('2026-06-01', 100), quote('2026-06-03', 50)],
+    dividends: [{ cash: 10, exDate: '2026-06-02' }],
+  });
+  const second = cache({ symbol: '2330', splits: [], prices: [quote('2026-06-01', 100), quote('2026-06-02', 100), quote('2026-06-03', 100)] });
+  const input = { symbols: ['0050', '2330'], marketCaches: [first, second], startDate: '2026-06-01', endDate: '2026-06-03', mode: 'cash' };
+  assert.throws(() => calculateStockComparison(input), /除息日缺少收盤價/);
+  first.prices.splice(1, 0, quote('2026-06-02', 100));
+  assert.ok(Math.abs(calculateStockComparison(input).series[0].change - 10) < 1e-8);
+  first.dividendCheckedThrough = null;
+  assert.throws(() => calculateStockComparison(input), /股息資料尚未確認/);
+  first.dividendCheckedThrough = '2026-06-03';
+  first.dividendCoverageFrom = '2026-06-02';
+  assert.throws(() => calculateStockComparison(input), /股息資料尚未確認/);
+});
+
+test('comparison refetches old portfolio dividend shapes and includes record dates beyond chart end', async t => {
+  const calls = [];
+  const old = ['0050', '2330'].map(symbol => cache({ symbol, splits: [], dividends: [{ cash: 2, exDate: '2026-06-02' }] }));
+  const h = await comparisonHarness(t, async (dataset, symbol, from, through) => {
+    calls.push({ dataset, from, through });
+    if (dataset === 'TaiwanStockSplitPrice') return [];
+    if (dataset === 'TaiwanStockDividend') {
+      const row = { date: '2026-06-09', CashEarningsDistribution: 2, CashStatutorySurplus: 3, CashExDividendTradingDate: '2026-06-02' };
+      return row.date >= from && row.date <= through ? [row] : [];
+    }
+    return [quote('2026-06-01', 100), quote('2026-06-02', 100), quote('2026-06-03', 100)];
+  }, old);
+  await h.page.setOptions(true, false);
+  await h.page.compare();
+  assert.equal(calls.filter(call => call.dataset === 'TaiwanStockDividend').length, 2);
+  assert.match(h.page.render(), /\+5\.00%/);
+  assert.doesNotMatch(h.page.render(), /\+2\.00%/);
+});
+
+test('two toggle buttons support all combinations, cached recalculation and focus', async t => {
+  let dividendCalls = 0;
+  const h = await comparisonHarness(t, async dataset => {
+    if (dataset === 'TaiwanStockSplitPrice') return [];
+    if (dataset === 'TaiwanStockDividend') {
+      dividendCalls++;
+      return [{ CashEarningsDistribution: 5, StockEarningsDistribution: 1, CashExDividendTradingDate: '2026-06-02', StockExDividendTradingDate: '2026-06-02' }];
+    }
+    return [quote('2026-06-01', 100), quote('2026-06-02', 100), quote('2026-06-03', 100)];
+  });
+  await h.page.compare();
+  const cash = h.f.nodes.get('#comparisonReinvest');
+  const stock = h.f.nodes.get('#comparisonStock');
+  await stock.fire('click');
+  assert.match(h.page.render(), /\+10\.00%/);
+  assert.match(h.page.render(), /期間含配股報酬/);
+  assert.equal(h.f.doc.activeElement, stock);
+  await cash.fire('click');
+  assert.match(h.page.render(), /\+15\.00%/);
+  assert.match(h.page.render(), /期間含息總報酬/);
+  await stock.fire('click');
+  assert.match(h.page.render(), /\+5\.00%/);
+  await cash.fire('click');
+  assert.match(h.page.render(), /期間股價變化/);
+  assert.equal(dividendCalls, 2);
+  assert.match(h.page.render(), /id="comparisonReinvest" aria-pressed="false"/);
+  assert.match(h.page.render(), /id="comparisonStock" aria-pressed="false"/);
+});
+
+test('switching options during a price request cancels the old job and fetches every dividend', async t => {
+  let release, started, first = true, oldSignal;
+  const ready = new Promise(resolve => { started = resolve; });
+  const dividends = [];
+  const h = await comparisonHarness(t, async (dataset, symbol, from, through, options) => {
+    if (dataset === 'TaiwanStockSplitPrice') return [];
+    if (dataset === 'TaiwanStockDividend') {
+      dividends.push(symbol);
+      return [{ CashEarningsDistribution: 5, CashExDividendTradingDate: '2026-06-02' }];
+    }
+    if (first) {
+      first = false;
+      oldSignal = options.signal;
+      started();
+      await new Promise(resolve => { release = resolve; });
+    }
+    return [quote('2026-06-01', 100), quote('2026-06-02', 100), quote('2026-06-03', 100)];
+  });
+  const old = h.page.compare();
+  await ready;
+  const switched = h.f.nodes.get('#comparisonReinvest').fire('click');
+  assert.equal(oldSignal.aborted, true);
+  release();
+  await Promise.all([old, switched]);
+  assert.deepEqual(dividends.sort(), ['0050', '2330']);
+  assert.match(h.page.render(), /期間含現金股息再投入報酬/);
+  assert.doesNotMatch(h.page.render(), /<strong>\+0\.00%<\/strong>/);
+});
+
+test('reset while a toggle waits for cancellation cannot restart the old comparison', async t => {
+  let release, started, calls = 0;
+  const ready = new Promise(resolve => { started = resolve; });
+  const h = await comparisonHarness(t, async () => {
+    calls++;
+    started();
+    await new Promise(resolve => { release = resolve; });
+    return [];
+  });
+  const old = h.page.compare();
+  await ready;
+  const switched = h.page.setOptions(true, true);
+  const reset = h.page.reset();
+  release();
+  await Promise.all([old, switched, reset]);
+  assert.equal(calls, 1);
+  assert.match(h.page.render(), /0 \/ 5/);
+  assert.match(h.page.render(), /id="comparisonStock" aria-pressed="false"/);
+});
+
+test('stock events respect interval boundaries and remain correct across a missing quote and split', async () => {
+  const { calculateStockComparison } = await import('../js/domain/comparison.js');
+  const stocks = [cache({
+    splits: [event('2026-06-03', 2)],
+    prices: [quote('2026-06-01', 100), quote('2026-06-03', 50)],
+    dividends: [
+      { stock: 9, stockExDate: '2026-06-01' },
+      { stock: 1, stockExDate: '2026-06-02' },
+      { stock: 9, stockExDate: '2026-06-04' },
+    ],
+  }), cache({ symbol: '2330', splits: [], prices: [quote('2026-06-01', 100), quote('2026-06-02', 100), quote('2026-06-03', 100)] })];
+  const result = calculateStockComparison({ symbols: ['0050', '2330'], marketCaches: stocks, startDate: '2026-06-01', endDate: '2026-06-03', mode: 'stock' });
+  assert.equal(result.series[0].values[1], null);
+  assert.ok(Math.abs(result.series[0].change - 10) < 1e-8);
+  assert.equal(result.series[0].dividendEvents.length, 1);
+});
+
+test('a failed dividend request removes the old chart and can retry successfully', async t => {
+  let fail = true;
+  const h = await comparisonHarness(t, async dataset => {
+    if (dataset === 'TaiwanStockSplitPrice') return [];
+    if (dataset === 'TaiwanStockDividend') {
+      if (fail) throw Error('股息服務暫時不可用');
+      return [];
+    }
+    return [quote('2026-06-01', 100), quote('2026-06-03', 100)];
+  });
+  await h.page.compare();
+  await h.f.nodes.get('#comparisonStock').fire('click');
+  assert.match(h.page.render(), /股息服務暫時不可用/);
+  assert.doesNotMatch(h.page.render(), /class="comparison-summary"/);
+  fail = false;
+  await h.page.compare();
+  assert.match(h.page.render(), /期間含配股報酬/);
+  assert.match(h.page.render(), /\+0\.00%/);
 });

@@ -553,7 +553,7 @@ function splitEventDetails(stock) {
 function header() {
   if (page === 'stock-comparison') return '<header><div><p class="eyebrow">額外工具</p><h1>股票比較</h1><p>同一段時間，從同一個起點看表現。</p></div></header>';
   const marketSummary=marketSyncSummary();
-  const subtitle=page==='stock-comparison' ? '選擇股票與日期，比較分割調整後的累積漲跌幅。' : page==='budget' ? '從生活支出建立退休月現金流目標。' : page==='retirement-calculator' ? '結合持股、生活預算與投入計畫，推算退休時間。' : page==='transactions' ? '管理交易紀錄，系統會自動計算持股與成本。' : page==='settings' ? '顯示方式與本機資料管理。' : `市場資料：${marketHeaderLabel(marketSummary)}`;
+  const subtitle=page==='stock-comparison' ? '選擇股票與日期，比較分割調整後的累積漲跌幅或含息總報酬。' : page==='budget' ? '從生活支出建立退休月現金流目標。' : page==='retirement-calculator' ? '結合持股、生活預算與投入計畫，推算退休時間。' : page==='transactions' ? '管理交易紀錄，系統會自動計算持股與成本。' : page==='settings' ? '顯示方式與本機資料管理。' : `市場資料：${marketHeaderLabel(marketSummary)}`;
   const action='';
   return `<header><div><p class="eyebrow">存股退休</p><h1>${PAGE_LABELS[page]}</h1><p class="market-as-of" role="status" aria-live="polite" aria-atomic="true">${subtitle}</p></div><div class="header-actions">${action}</div></header>`;
 }
