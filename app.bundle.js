@@ -2948,7 +2948,112 @@ function transactionModal() {
   return `<div class="modal-backdrop" id="transactionModalBackdrop"><section class="transaction-modal" role="dialog" aria-modal="true" aria-labelledby="transactionModalTitle"><div class="modal-header"><div><p class="eyebrow">${isEditing?'編輯紀錄':'手動新增'}</p><h2 id="transactionModalTitle">${isEditing?'編輯交易紀錄':'新增交易紀錄'}</h2></div><button class="modal-close" id="closeTransactionModal" aria-label="關閉">×</button></div><form id="transactionForm" novalidate><div class="form-error" id="transactionFormError" role="alert" tabindex="-1" hidden></div><div class="transaction-form-grid"><label>交易日期<input id="transactionDate" name="date" type="date" value="${escapeHtml(transaction?.date||today())}" required /></label><div class="transaction-field stock-combobox-field"><label for="transactionSymbol">股票代號或名稱</label><div class="stock-combobox"><input id="transactionSymbol" name="symbol" type="text" autocomplete="off" placeholder="例如：0050 或 元大台灣50" maxlength="30" value="${escapeHtml(transaction?.symbol||'')}" role="combobox" aria-autocomplete="list" aria-controls="transactionStockSuggestions" aria-expanded="false" aria-describedby="transactionStockHelp" required autofocus /><div class="stock-suggestions" id="transactionStockSuggestions" role="listbox" aria-label="符合的台灣股票" hidden></div></div><small id="transactionStockHelp" class="field-help">可輸入中文名稱或股票代號搜尋。</small></div><label>取得方式<select name="acquisitionType" id="transactionType">${Object.entries(ACQUISITIONS).map(([key,label])=>`<option value="${key}" ${key===selectedType?'selected':''}>${label}</option>`).join('')}</select></label><label>股數<input id="transactionQuantity" name="quantity" type="number" min="1" step="1" placeholder="例如：1000" value="${transaction?.quantity??''}" required /></label><label>成交價（元／股）<input name="price" id="transactionPrice" type="number" min="0" step="any" placeholder="例如：20.50" value="${transaction?.price??''}" required /></label><label>手續費（元）<input id="transactionFee" name="fee" type="number" min="0" step="any" value="${transaction?.fee??0}" required /></label></div><div class="transaction-cost-preview" role="status" aria-live="polite" aria-atomic="true"><div><span>預估總成本</span><strong id="transactionCostPreview">請填寫至少 1 股的股數與成交價</strong></div><small id="transactionCostFormula">股數 × 成交價 ＋ 手續費</small></div><div class="modal-actions"><button type="button" class="secondary" id="cancelTransaction">取消</button><button type="submit" class="primary" id="saveTransaction">${isEditing?'儲存變更':'儲存交易'}</button></div></form></section></div>`;
 }
 function aiImportPrompt() {
-  return `請將我提供的台灣股票交易資料整理為可匯入的 CSV。\n\n請只輸出 CSV 純文字，不要 Markdown、說明或程式碼區塊。第一列欄位必須完全是：\ndate,acquisition_type,symbol,quantity,price,fee\n\n整理規則：\n1. 日期使用 YYYY-MM-DD；原始資料缺少完整日期時，不要猜測。\n2. acquisition_type 只能使用：MANUAL_BUY、RECURRING_INVESTMENT、DIVIDEND_REINVESTMENT、STOCK_DIVIDEND。\n3. 只保留買進、定期定額、股息再投入與配股；賣出、轉出、借券等不支援紀錄請排除。\n4. symbol 保留台股股票代號，例如 00878、2330，不要轉成數字格式或補小數點。\n5. quantity 為至少 1 股的整數；price 是每股成交價。配股（STOCK_DIVIDEND）的 price 留空。\n6. fee 為手續費；原始資料沒有時填 0。\n7. 無法確認欄位時不要臆測，該筆紀錄請排除。\n\n以下是我的原始資料：\n`;
+  return `請將我提供的台灣股票交易資料整理為可匯入的 CSV。
+
+請只輸出 CSV 檔案，不要 Markdown、說明或程式碼區塊。
+
+第一列欄位必須完全是：
+date,acquisition_type,symbol,quantity,price,fee
+
+整理規則：
+
+1. 日期
+- 日期統一使用 YYYY-MM-DD。
+- 如果原始資料缺少完整日期，不要自行猜測，該筆紀錄排除。
+
+2. acquisition_type
+只能使用以下四種：
+MANUAL_BUY
+RECURRING_INVESTMENT
+DIVIDEND_REINVESTMENT
+STOCK_DIVIDEND
+
+3. 交易類型判斷方式
+請依照以下優先順序判斷：
+
+A. STOCK_DIVIDEND
+- 如果該筆股票的成交單價為 0，視為配股／股票股利。
+- acquisition_type 填 STOCK_DIVIDEND。
+- price 欄位留空。
+- fee 填 0。
+
+B. MANUAL_BUY
+- 如果 quantity 為台股整股交易，例如 1000 股、2000 股、3000 股、5000 股、10000 股等 1000 股的整數倍，通常視為我自己手動買進。
+- acquisition_type 填 MANUAL_BUY。
+- 手續費依正常台股買進手續費計算：
+成交金額 = quantity × price
+fee = 成交金額 × 0.1425%
+- 手續費四捨五入為整數。
+- 如果原始資料有明確實際手續費，則優先使用原始資料。
+
+C. RECURRING_INVESTMENT
+- 如果不是 1000 股整數倍，且 quantity × price 的投入金額約為新台幣 10000 元，視為定期定額。
+- 判斷時以「接近 10000 元」為主要依據，不需要剛好等於 10000 元，因股價波動可能使成交金額略低或略高。
+- acquisition_type 填 RECURRING_INVESTMENT。
+- fee 固定填 1。
+
+D. DIVIDEND_REINVESTMENT
+- 如果不是 1000 股整數倍，而且成交金額明顯不是約 10000 元，例如只有數千元、兩三萬元或其他與固定定期定額金額差距較大的零股交易，通常視為股息再投入。
+- acquisition_type 填 DIVIDEND_REINVESTMENT。
+- fee 固定填 1。
+
+4. 判斷優先順序
+請按照以下順序判斷：
+- 單價為 0 -> STOCK_DIVIDEND
+- 1000 股的整數倍 -> MANUAL_BUY
+- 零股且成交金額約 10000 元 -> RECURRING_INVESTMENT
+- 零股且成交金額明顯偏離 10000 元 -> DIVIDEND_REINVESTMENT
+
+5. 只保留以下交易
+- 自行買進
+- 定期定額
+- 股息再投入
+- 股票股利／配股
+
+以下類型全部排除：
+- 賣出
+- 轉出
+- 借券
+- 還券
+- 其他無法支援或無法確認的紀錄
+
+6. symbol
+- symbol 保留台股原始股票代號。
+- 例如：0050、006208、00878、00929、2330、2883。
+- 不要刪除前面的 0。
+- 不要轉成數字格式或加小數點。
+
+7. quantity
+- quantity 必須是至少 1 股的整數。
+- 不要加入逗號，例如 10000 股要輸出成 10000。
+
+8. price
+- price 填每股成交價。
+- MANUAL_BUY、RECURRING_INVESTMENT、DIVIDEND_REINVESTMENT 都要保留成交單價。
+- STOCK_DIVIDEND 的 price 留空。
+
+9. fee
+- MANUAL_BUY：以 quantity × price × 0.1425% 計算，四捨五入至整數。
+- RECURRING_INVESTMENT：固定填 1。
+- DIVIDEND_REINVESTMENT：固定填 1。
+- STOCK_DIVIDEND：固定填 0。
+- 若原始資料有明確實際手續費，優先採用原始資料。
+
+10. 不要臆測
+- 如果日期、股票代號、股數或成交價格無法清楚辨識，不要猜測，直接排除該筆。
+- 交易類型可依照上述「股數 + 成交金額 + 單價是否為 0」的規則判定。
+
+11. 輸出格式
+每筆資料格式必須為：
+date,acquisition_type,symbol,quantity,price,fee
+
+例如：
+2024-06-13,MANUAL_BUY,00929,10000,20.89,298
+2024-07-23,RECURRING_INVESTMENT,00929,503,19.83,1
+2026-06-22,DIVIDEND_REINVESTMENT,0050,253,110.91,1
+2025-11-12,STOCK_DIVIDEND,2883,50,,0
+
+以下是我的原始台股交易資料：`;
 }
 function aiImportGuide() {
   if (!aiImportGuideOpen) return '';
