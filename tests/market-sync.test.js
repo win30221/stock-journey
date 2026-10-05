@@ -5,7 +5,7 @@ const { buildBundle } = require('../scripts/build-static.cjs');
 const source = buildBundle().replace(
   /\nload\(\);\s*$/,
   `\nglobalThis.__marketTest = {
-    marketTargetDate, isWaitingForTodayClose, marketSyncPlan, symbolNeedsMarketSync, marketSyncSummary, isMarketAutoSyncPaused, marketCacheDisplayRows, trendDailySeries, trendChart, chartTooltip, normaliseTrendTooltipEventLimit, normaliseGainMilestoneInterval, trendSetFrequency, trendSelection, trendIndexAtClientX,
+    marketTargetDate, nextMarketBoundary, missingPriceRetryAfter, isWaitingForTodayClose, marketSyncPlan, symbolNeedsMarketSync, marketSyncSummary, isMarketAutoSyncPaused, marketCacheDisplayRows, trendDailySeries, trendChart, chartTooltip, normaliseTrendTooltipEventLimit, normaliseGainMilestoneInterval, trendSetFrequency, trendSelection, trendIndexAtClientX,
     setState(nextTransactions, nextCaches, nextTradingDates = []) {
       transactions = nextTransactions;
       marketCaches = nextCaches;
@@ -46,7 +46,17 @@ assert.equal(market.trendIndexAtClientX(600, chartRect, 2, 1000), 1, '圖表右�
 
 const tradingDates = ['2026-08-27', '2026-08-28', '2026-08-31', '2026-09-01'];
 assert.equal(market.marketTargetDate(new Date('2026-08-31T02:00:00Z'), tradingDates), '2026-08-28', '盤中只使用上一交易日');
-assert.equal(market.marketTargetDate(new Date('2026-08-31T10:01:00Z'), tradingDates), '2026-08-31', '18:00 後可期待當日資料');
+assert.equal(market.marketTargetDate(new Date('2026-08-31T09:29:59Z'), tradingDates), '2026-08-28', '17:30 前只查上一交易日');
+assert.equal(market.marketTargetDate(new Date('2026-08-31T09:30:00Z'), tradingDates), '2026-08-31', '17:30 起可期待當日資料');
+assert.equal(market.isWaitingForTodayClose(new Date('2026-08-31T09:30:00Z')), false);
+assert.equal(market.nextMarketBoundary(new Date('2026-08-31T09:29:59Z')).toISOString(), '2026-08-31T09:30:00.000Z');
+assert.equal(market.nextMarketBoundary(new Date('2026-09-04T09:30:00Z')).toISOString(), '2026-09-07T09:30:00.000Z', '週五排程後，下次排程為週一 17:30');
+for (const [count, minutes] of [[1,5], [2,10], [3,20], [4,40], [5,60], [8,60]]) {
+  const now = new Date('2026-08-31T09:30:00Z');
+  assert.equal(Date.parse(market.missingPriceRetryAfter('2026-08-31', count, now)) - now.getTime(), minutes * 60000);
+}
+assert.equal(market.missingPriceRetryAfter('2026-09-04', 5, new Date('2026-09-04T15:30:00Z')), '2026-09-07T09:30:00.000Z', '重試跨午夜時改等下次排程');
+assert.equal(market.missingPriceRetryAfter('2026-09-04', 1, new Date('2026-09-05T01:00:00Z')), '2026-09-07T09:30:00.000Z', '週末不持續輪詢缺價');
 assert.equal(market.marketTargetDate(new Date('2026-08-30T03:00:00Z'), tradingDates), '2026-08-28', '週末回到最近交易日');
 assert.equal(market.marketTargetDate(new Date('2026-09-28T11:00:00Z'), ['2026-09-25']), '2026-09-25', '交易日曆可辨識國定假日');
 
@@ -64,6 +74,13 @@ const readyCache = {
 market.setState([{ symbol: '0050', date: '2026-08-31' }], [readyCache], tradingDates);
 assert.equal(market.symbolNeedsMarketSync('0050', '2026-08-28'), false, '零配息但已檢查不應視為未同步');
 assert.equal(market.symbolNeedsMarketSync('0050', '2026-08-31'), true, '新交易日應更新價格與股息快照');
+
+market.setState([{ symbol:'0050', date:'2026-08-31' }], [{
+  ...readyCache, priceCheckedThrough:'2026-08-31', dividendCheckedThrough:'2026-08-31', splitCheckedThrough:'2026-08-31',
+}], tradingDates);
+assert.equal(market.symbolNeedsMarketSync('0050', '2026-08-31'), true, '舊版本誤標已完成的快取也應補抓');
+assert.equal(market.marketSyncPlan('0050', '2026-08-31').priceStart, '2026-08-29', '補抓起點為實際股價的隔日，涵蓋週末後的缺價');
+assert.equal(market.marketSyncSummary(new Date('2026-08-31T10:00:00Z')).readyCount, 0, '缺少當日股價不可顯示完成');
 
 market.setState([{ symbol:'0050', date:'2026-08-31' }], [{ ...readyCache, dividendCoverageFrom:'2026-08-28' }], tradingDates);
 assert.equal(market.symbolNeedsMarketSync('0050', '2026-08-28'), true, '只檢查最近日期、未涵蓋全年配息的舊快取應回補');

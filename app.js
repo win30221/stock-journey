@@ -1,6 +1,6 @@
 import { normaliseSplitEvents, splitAdjustedQuantity, splitAdjustedPrice, splitCoverageComplete } from './js/domain/splits.js';
 import { createComparisonPage } from './js/app/comparison-page.js';
-import { ACQUISITIONS, APP_VERSION, BACKUP_SCHEMA_VERSION, MARKET_RETRY_BASE_MINUTES, TREND_EVENT_MARKER_SETTINGS } from './js/lib/constants.js';
+import { ACQUISITIONS, APP_VERSION, BACKUP_SCHEMA_VERSION, MARKET_DATA_READY_MINUTES, MARKET_RETRY_BASE_MINUTES, TREND_EVENT_MARKER_SETTINGS } from './js/lib/constants.js';
 import { escapeHtml, fmt, fmtAverageCost, fmtPerShare, fmtPerShareNumber, fmtSignedMoney, fmtShares, money } from './js/lib/format.js';
 import { isWaitingForTodayClose, isWeekday, marketTargetDate as resolveMarketTargetDate, shiftDate, taipeiClock, today, uid } from './js/lib/date.js';
 import { calculateTransactionCost, calculateUnrealizedReturn } from './js/domain/portfolio.js';
@@ -229,12 +229,13 @@ function symbolNeedsMarketSync(symbol, target = marketTargetDate(), now = new Da
   const cache=cacheFor(symbol), earliest=earliestTransactionDate(symbol), priceFrom=cache?.priceCoverageFrom||firstMarketDate(cache);
   if (!splitCoverageComplete(cache, target)) return retryAvailable(cache,now);
   if (!cache || !(cache.prices || []).length || !checkedThrough(cache,'price') || !checkedThrough(cache,'dividend')) return retryAvailable(cache,now);
-  if (createMarketSyncPlan({cache,transactionStart:earliest,target}).dividendNeeded || (earliest&&priceFrom&&earliest<priceFrom) || checkedThrough(cache,'price')<target || checkedThrough(cache,'dividend')<target) return retryAvailable(cache,now);
+  const plan = createMarketSyncPlan({cache,transactionStart:earliest,target});
+  if (plan.priceNeeded || plan.dividendNeeded || (earliest&&priceFrom&&earliest<priceFrom)) return retryAvailable(cache,now);
   return Boolean(cache.syncErrors?.length) && retryAvailable(cache,now);
 }
 function marketSyncSummary(now = new Date()) {
   const symbols=[...new Set(transactions.map(row=>row.symbol))], target=marketTargetDate(now), waiting=isWaitingForTodayClose(now);
-  const rows=symbols.map(symbol=>{const cache=cacheFor(symbol),hasPrice=Boolean(lastMarketDate(cache)),priceReady=hasPrice&&Boolean(checkedThrough(cache,'price'))&&checkedThrough(cache,'price')>=target,dividendReady=Boolean(checkedThrough(cache,'dividend'))&&checkedThrough(cache,'dividend')>=target&&splitCoverageComplete(cache,target);return {symbol,cache,hasPrice,priceReady,dividendReady,errors:cache?.syncErrors||[]};});
+  const rows=symbols.map(symbol=>{const cache=cacheFor(symbol),hasPrice=Boolean(lastMarketDate(cache)),priceReady=hasPrice&&lastMarketDate(cache)>=target&&Boolean(checkedThrough(cache,'price'))&&checkedThrough(cache,'price')>=target,dividendReady=Boolean(checkedThrough(cache,'dividend'))&&checkedThrough(cache,'dividend')>=target&&splitCoverageComplete(cache,target);return {symbol,cache,hasPrice,priceReady,dividendReady,errors:cache?.syncErrors||[]};});
   const priceCount=rows.filter(row=>row.hasPrice).length, readyCount=rows.filter(row=>row.priceReady&&row.dividendReady&&!row.errors.length).length, errorCount=rows.filter(row=>row.errors.length).length;
   const state=marketSyncInProgress?'SYNCING':!symbols.length?'EMPTY':errorCount?'PARTIAL':readyCount===symbols.length?(waiting?'WAITING_FOR_CLOSE':'READY'):priceCount?'STALE':'PENDING';
   return {symbols,rows,target,waiting,priceCount,readyCount,errorCount,state,latestDate:latestMarketDate()};
@@ -245,7 +246,7 @@ function marketHeaderLabel(summary = marketSyncSummary()) {
   if (isMarketAutoSyncPaused()&&!summary.latestDate) return '市場快取已清除 · 等待下次排程或手動同步';
   if (!summary.latestDate) return summary.errorCount?'市場資料同步失敗，可手動重試':'市場資料準備同步';
   const date=summary.latestDate.replaceAll('-','/');
-  if (summary.state==='WAITING_FOR_CLOSE') return `截至 ${date} 收盤 · 今日資料約 18:00 更新`;
+  if (summary.state==='WAITING_FOR_CLOSE') return `截至 ${date} 收盤 · 今日資料約 17:30 更新`;
   if (['PARTIAL','STALE','PENDING'].includes(summary.state)) return `截至 ${date} 收盤 · 部分資料待更新`;
   return `截至 ${date} 收盤`;
 }
@@ -269,10 +270,24 @@ function marketSyncPlan(symbol, target, force = false) {
   return createMarketSyncPlan({ cache:cacheFor(symbol)||{}, transactionStart:earliestTransactionDate(symbol), target, force });
 }
 function nextMarketBoundary(now = new Date()) {
-  const clock=taipeiClock(now), todayBoundary=new Date(Date.UTC(clock.year,clock.month-1,clock.day,10,5));
+  const clock=taipeiClock(now);
+  const boundaryHour = Math.floor(MARKET_DATA_READY_MINUTES / 60) - 8;
+  const boundaryMinute = MARKET_DATA_READY_MINUTES % 60;
+  const todayBoundary = new Date(Date.UTC(clock.year,clock.month-1,clock.day,boundaryHour,boundaryMinute));
   if (isWeekday(clock.date)&&todayBoundary>now) return todayBoundary;
   let next=shiftDate(clock.date,1);while(!isWeekday(next))next=shiftDate(next,1);
-  const [year,month,day]=next.split('-').map(Number);return new Date(Date.UTC(year,month-1,day,10,5));
+  const [year,month,day]=next.split('-').map(Number);return new Date(Date.UTC(year,month-1,day,boundaryHour,boundaryMinute));
+}
+function missingPriceRetryAfter(target, retryCount, now = new Date()) {
+  const clock = taipeiClock(now);
+  const delayMinutes = Math.min(60, MARKET_RETRY_BASE_MINUTES * 2 ** Math.max(0, retryCount - 1));
+  const retry = new Date(now.getTime() + delayMinutes * 60000);
+  // A suspended stock may never have a quote for this date. Stop intraday
+  // polling at midnight; the next daily boundary will check again.
+  if (target !== clock.date || taipeiClock(retry).date !== clock.date) {
+    return nextMarketBoundary(now).toISOString();
+  }
+  return retry.toISOString();
 }
 function scheduleMarketSyncCheck() {
   clearTimeout(marketSyncTimer);
@@ -307,6 +322,7 @@ function refreshMarketView() {
   }
   // Background updates must not replace an editor or a form being filled in.
   if (transactionModalOpen || aiImportGuideOpen || budgetEditorOpen || page==='settings' || document.querySelector('#overviewBirthMonthForm')) {
+    if (page === 'overview') repaintTrend();
     const status=document.querySelector('.market-as-of');
     if(status && !['settings','retirement-calculator','budget','transactions'].includes(page)) status.textContent=`市場資料：${marketHeaderLabel()}`;
     return;
@@ -365,11 +381,17 @@ async function syncMarket(options = {}) {
         let prices=existing.prices||[],dividends=existing.dividends||[];
         let priceCoverageFrom=existing.priceCoverageFrom||firstMarketDate(existing),priceCheckedThrough=checkedThrough(existing,'price');
         let dividendCoverageFrom=existing.dividendCoverageFrom||null,dividendCheckedThrough=checkedThrough(existing,'dividend');
+        let missingTargetPrice = false;
         if(plan.priceNeeded && priceResult.status==='fulfilled') {
           const incoming=priceResult.value.filter(row=>row.date && row.close!=null).map(row=>({date:row.date,close:Number(row.close),open:row.open,high:row.max,low:row.min,volume:row.Trading_Volume}));
           prices=mergeRows(prices,incoming,row=>row.date);
-          priceCoverageFrom=dateMin(priceCoverageFrom,plan.priceStart);priceCheckedThrough=target;
-          if(!prices.length)failedParts.push('價格：查無可用收盤資料');
+          priceCoverageFrom=dateMin(priceCoverageFrom,plan.priceStart);
+          const latestPriceDate = lastMarketDate({ prices });
+          priceCheckedThrough = latestPriceDate ? dateMin(target, latestPriceDate) : null;
+          missingTargetPrice = !latestPriceDate || latestPriceDate < target;
+          if (missingTargetPrice) {
+            failedParts.push(`價格：${target} 收盤資料尚未取得（來源尚未更新或個股無報價），保留舊價格並稍後重試`);
+          }
         } else if(plan.priceNeeded)failedParts.push(`價格：${priceResult.reason?.message||'同步失敗'}`);
         if(plan.dividendNeeded && dividendResult.status==='fulfilled') {
           const incoming=dividendResult.value.map((row,index)=>({
@@ -383,7 +405,10 @@ async function syncMarket(options = {}) {
         } else if(plan.dividendNeeded)failedParts.push(`股息：${dividendResult.reason?.message||'同步失敗'}`);
         const info=infoBySymbol.get(symbol)||{};
         const retryCount=failedParts.length?Number(existing.retryCount||0)+1:0;
-        const retryAfter=failedParts.length?new Date(Date.now()+Math.min(60,MARKET_RETRY_BASE_MINUTES*2**Math.max(0,retryCount-1))*60000).toISOString():null;
+        const onlyMissingTargetPrice = missingTargetPrice && failedParts.length === 1;
+        const retryAfter = !failedParts.length ? null : onlyMissingTargetPrice
+          ? missingPriceRetryAfter(target, retryCount)
+          : new Date(Date.now()+Math.min(60,MARKET_RETRY_BASE_MINUTES*2**Math.max(0,retryCount-1))*60000).toISOString();
         const next={...existing,id:`finmind:${symbol}`,symbol,prices,dividends,splits,splitCheckedThrough,splitError,name:info.stock_name||existing.name||null,securityType:info.type||existing.securityType||null,source:'FINMIND',priceCoverageFrom,priceCheckedThrough,dividendCoverageFrom,dividendCheckedThrough,lastAttemptAt:attemptedAt,lastSuccessAt:failedParts.length?existing.lastSuccessAt||null:attemptedAt,syncedAt:failedParts.length?existing.syncedAt||null:attemptedAt,syncStatus:failedParts.length?(prices.length?'PARTIAL':'ERROR'):'READY',syncErrors:failedParts,retryCount,retryAfter};
         task.check();
         await marketCacheRepository.save(next);
@@ -395,7 +420,7 @@ async function syncMarket(options = {}) {
       task.check();
       await saveSettingsPatch({marketAutoSyncPausedUntil:null,lastMarketSyncAttemptDate:today(),lastSuccessfulMarketSyncDate:failures.length?settings.lastSuccessfulMarketSyncDate:today()});
       task.check();
-      const closeNote=isWaitingForTodayClose()?'；今日資料約 18:00 後更新':'';
+      const closeNote=isWaitingForTodayClose()?'；今日資料約 17:30 後更新':'';
       const syncMessage=failures.length?`完成，但 ${failures.length} 檔有資料未更新，系統稍後重試`:`已${automatic?'自動':''}同步 ${symbols.length} 檔市場資料${closeNote}`;
       if(failures.length||!automatic)toast(syncMessage);
       if(failures.length)console.warn('Market sync failures:',failures);
@@ -721,7 +746,27 @@ function enrichTrendRows(rows) {
   return rows.map((row,index)=>{const previous=rows[index-1],marketChange=previous?row.market-previous.market:null,marketChangeRate=previous&&previous.market?marketChange/previous.market*100:null,milestones=[];let assetLevel=index===0?lastAsset:Math.floor(row.market/assetStep)*assetStep,gainLevel=Math.floor(Math.max(0,row.market-row.external)/gainStep)*gainStep;if(assetLevel>0&&(index===0||assetLevel>lastAsset))milestones.push({kind:'asset',value:assetLevel,label:`持股資產 ${compact(assetLevel)}`});if(gainLevel>0&&(index===0||gainLevel>lastGain))milestones.push({kind:'gain',value:gainLevel,label:`累積成果 ${compact(gainLevel)}`});lastAsset=Math.max(lastAsset,assetLevel);lastGain=Math.max(lastGain,gainLevel);return {...row,marketChange,marketChangeRate,returnRate:row.external?(row.market-row.external)/row.external*100:null,milestones};});
 }
 function trendSeries() { const dataset=trendDataset();return trendState.frequency==='day'?dataset.daily:dataset.month; }
-function trendSelection(all=trendSeries()) { if(!all.length)return {points:[],start:0,end:0};const max=all.length-1;if(trendState.start==null||trendState.end==null||trendState.end>max){trendState.start=0;trendState.end=max;}trendState.start=Math.max(0,Math.min(trendState.start,max));trendState.end=Math.max(trendState.start,Math.min(trendState.end,max));return {points:all.slice(trendState.start,trendState.end+1),start:trendState.start,end:trendState.end}; }
+function trendSelection(all = trendSeries()) {
+  if (!all.length) return { points:[], start:0, end:0 };
+  const max = all.length - 1;
+  if (trendState.range !== 'custom') {
+    trendState.start = 0;
+    trendState.end = max;
+    if (trendState.range !== 'all') {
+      const target = new Date(`${all[max].date}T00:00:00Z`);
+      const months = { '1m':1, '3m':3, '6m':6, '1y':12, '3y':36 }[trendState.range] || 12;
+      target.setUTCMonth(target.getUTCMonth() - months);
+      const date = target.toISOString().slice(0, 10);
+      trendState.start = Math.max(0, all.findIndex(row => row.date >= date));
+    }
+  } else if (trendState.start == null || trendState.end == null || trendState.end > max) {
+    trendState.start = 0;
+    trendState.end = max;
+  }
+  trendState.start = Math.max(0, Math.min(trendState.start, max));
+  trendState.end = Math.max(trendState.start, Math.min(trendState.end, max));
+  return { points:all.slice(trendState.start, trendState.end + 1), start:trendState.start, end:trendState.end };
+}
 function trendDateLabel(date) { const [y,m,d]=date.split('-');return trendState.frequency==='day'?`${y}/${m}/${d}`:`${y} 年 ${m} 月`; }
 function compact(value) { return `${(value/10000).toLocaleString('zh-TW',{maximumFractionDigits:value<1000000?0:1})}萬`; }
 function trendSvgLine(points,key,x,y) { return points.map((p,i)=>`${i?'L':'M'}${x(i).toFixed(1)},${y(p[key]).toFixed(1)}`).join(' '); }
@@ -784,7 +829,11 @@ function trendChart() {
 function trendIndexAtClientX(clientX,rect,length,viewWidth=trendChartWidth()) { if(length<=1)return 0;const {left,right}=trendChartMetrics(viewWidth),chartX=(clientX-rect.left)/Math.max(1,rect.width)*viewWidth,pointGap=(viewWidth-left-right)/(length-1),nearest=Math.round((chartX-left)/pointGap);return Math.max(0,Math.min(length-1,nearest)); }
 function trendIndexAtStageClientX(stage,clientX,length) { const svg=stage.querySelector('svg'),rect=svg?.getBoundingClientRect()||stage.getBoundingClientRect(),viewWidth=svg?.viewBox?.baseVal?.width||trendChartWidth();return trendIndexAtClientX(clientX,rect,length,viewWidth); }
 function updateTrendFocus(index) { const points=trendSelection().points,item=points[index],stage=document.querySelector('#assetTrendChart');if(!item||!stage)return;const svg=stage.querySelector('svg'),width=svg?.viewBox?.baseVal?.width||trendChartWidth(),height=svg?.viewBox?.baseVal?.height||340,{left,right,top,bottom}=trendChartMetrics(width),chartWidth=width-left-right,chartHeight=height-top-bottom,{yMin,yMax}=trendScale(points),x=left+index*chartWidth/Math.max(1,points.length-1),y=value=>top+chartHeight-(value-yMin)/(yMax-yMin)*chartHeight,focus=document.querySelector('#trendFocus'),focusDot=document.querySelector('#trendFocusDot'),tip=document.querySelector('#trendTooltip');if(!focus||!focusDot||!tip)return;stage.dataset.focusIndex=index;stage.querySelectorAll('[data-trend-marker]').forEach(marker=>marker.classList.toggle('is-active',Number(marker.dataset.trendMarker)===index));focus.innerHTML=`<line x1="${x}" x2="${x}" y1="${top}" y2="${top+chartHeight}" class="trend-crosshair"/>`;focusDot.style.left=`${x/width*100}%`;focusDot.style.top=`${y(item.market)/height*100}%`;focusDot.classList.add('show');tip.innerHTML=chartTooltip(item);tip.classList.add('show');const rect=stage.getBoundingClientRect(),anchor=x/width*rect.width;tip.style.left=`${anchor}px`;tip.classList.toggle('right',anchor>rect.width*.62); }
-function trendSetRange(range) { const all=trendSeries(),end=Math.max(0,all.length-1);trendState.range=range;trendState.end=end;if(range==='all')trendState.start=0;else{const target=new Date(`${all[end].date}T00:00:00`),months={'1m':1,'3m':3,'6m':6,'1y':12,'3y':36}[range]||12;target.setMonth(target.getMonth()-months);const date=target.toISOString().slice(0,10);trendState.start=Math.max(0,all.findIndex(row=>row.date>=date));}render(); }
+function trendSetRange(range) {
+  trendState.range = range;
+  trendSelection();
+  render();
+}
 function trendSetFrequency(frequency) { trendState.frequency=frequency;trendState.start=null;trendState.end=null;trendSetRange(frequency==='day'?'1y':'all'); }
 function indexForNavigator(clientX,rect,length) { return Math.max(0,Math.min(length-1,Math.round((clientX-rect.left)/rect.width*(length-1)))); }
 function trendNavigatorDragMode({clientX,selectionRect,handleEdge,compact,mobile=isCompactTrendChart()}) { if(!selectionRect)return 'jump';if(mobile){const edgeZone=Math.min(18,selectionRect.width/2);if(clientX<=selectionRect.left+edgeZone)return 'start';if(clientX>=selectionRect.right-edgeZone)return 'end';return 'move';}if(handleEdge&&compact)return clientX<(selectionRect.left+selectionRect.right)/2?'start':'end';return handleEdge||'move'; }
@@ -1115,13 +1164,13 @@ function bindDividendTooltip() {
 function marketSyncPanel(summary = marketSyncSummary()) {
   const synced=marketCaches.filter(cache=>cache.lastSuccessAt||cache.syncedAt);
   const lastSuccess=synced.length?new Date(Math.max(...synced.map(cache=>new Date(cache.lastSuccessAt||cache.syncedAt)))):null;
-  return `<section class="panel market-sync-panel"><div class="panel-title"><div><p class="eyebrow">公開資料快取</p><h2>市場資料同步</h2><p>首次匯入會立即同步至最近完整收盤日；當日日股價由 FinMind 約 17:30 更新，系統會在 18:00 後自動增量同步。價格與配息分開記錄狀態，失敗不會清除舊快取。</p></div><button class="primary" id="marketSync" ${marketSyncInProgress?'disabled aria-busy="true"':''}>${syncProgress || '重新整理全部市場資料'}</button></div><div class="diagnostic"><span>完整／持有股票</span><b>${summary.readyCount}／${summary.symbols.length} 檔</b><span>預期檢查至</span><b>${summary.target}</b><span>最新實際收盤</span><b>${summary.latestDate||'尚未取得'}</b><span>最後成功</span><b>${lastSuccess?lastSuccess.toLocaleString('zh-TW'):'尚未同步'}</b>${summary.errorCount?`<span>需重試</span><b class="diagnostic-error">${summary.errorCount} 檔（已保留舊資料）</b>`:''}</div></section>`;
+  return `<section class="panel market-sync-panel"><div class="panel-title"><div><p class="eyebrow">公開資料快取</p><h2>市場資料同步</h2><p>首次匯入會立即同步至最近完整收盤日；當日日股價由 FinMind 約 17:30 更新，系統會從 17:30 開始自動增量同步。若當日股價尚未取得，會保留舊價格並以 5、10、20、40 分鐘及最多每 60 分鐘重試；跨午夜後改於下一個排程檢查，個股無報價也不會誤標為完成。價格與配息分開記錄狀態，失敗不會清除舊快取。</p></div><button class="primary" id="marketSync" ${marketSyncInProgress?'disabled aria-busy="true"':''}>${syncProgress || '重新整理全部市場資料'}</button></div><div class="diagnostic"><span>完整／持有股票</span><b>${summary.readyCount}／${summary.symbols.length} 檔</b><span>預期檢查至</span><b>${summary.target}</b><span>最新實際收盤</span><b>${summary.latestDate||'尚未取得'}</b><span>最後成功</span><b>${lastSuccess?lastSuccess.toLocaleString('zh-TW'):'尚未同步'}</b>${summary.errorCount?`<span>需重試</span><b class="diagnostic-error">${summary.errorCount} 檔（已保留舊資料）</b>`:''}</div></section>`;
 }
 function marketDataPage() { return `${marketSyncPanel()}${marketDataContent()}`; }
 function marketDataContent() {
   const syncSummary=marketSyncSummary(), heldRows=new Map(syncSummary.rows.map(row=>[row.symbol,row])), stocks=marketCacheDisplayRows(syncSummary);
   syncSummary.rows=stocks.map(item=>heldRows.get(item.symbol)||{symbol:item.symbol,cache:item,hasPrice:Boolean(lastMarketDate(item)),priceReady:true,dividendReady:true,errors:item.syncErrors||[],cachedOnly:true});
-  if (!stocks.length) { const paused=isMarketAutoSyncPaused();return `<section class="panel market-data-table"><div class="panel-title"><div><p class="eyebrow">公開資料快取</p><h2>市場資料</h2><p>${marketSyncInProgress?'正在建立第一份市場快取。':paused?'市場快取已由你手動清除，目前不會立即自動重建。':'尚未有市場快取；匯入交易後系統會立即同步至最近完整收盤日。'}</p></div></div><p class="market-empty" role="status" aria-live="polite">${syncProgress||(paused?'可按右上角「同步資料」立即重建；否則會在下一個 18:00 排程更新。':'若自動同步失敗，可使用右上角「同步資料」重試。')}</p></section>`; }
+  if (!stocks.length) { const paused=isMarketAutoSyncPaused();return `<section class="panel market-data-table"><div class="panel-title"><div><p class="eyebrow">公開資料快取</p><h2>市場資料</h2><p>${marketSyncInProgress?'正在建立第一份市場快取。':paused?'市場快取已由你手動清除，目前不會立即自動重建。':'尚未有市場快取；匯入交易後系統會立即同步至最近完整收盤日。'}</p></div></div><p class="market-empty" role="status" aria-live="polite">${syncProgress||(paused?'可按右上角「同步資料」立即重建；否則會在下一個 17:30 排程更新。':'若自動同步失敗，可使用右上角「同步資料」重試。')}</p></section>`; }
   const stock=stocks.find(item=>item.symbol===marketSymbol) || stocks[0];
   marketSymbol=stock.symbol;
   const prices=[...(stock.prices || [])].sort((a,b)=>b.date.localeCompare(a.date));
@@ -1578,7 +1627,7 @@ function bind() {
   });
   addNumberSteppers();
   document.querySelector('#backup')?.addEventListener('click', backup); document.querySelector('#restore')?.addEventListener('change', e => restore(e.target.files[0]));
-  document.querySelector('#clearMarket')?.addEventListener('click',uiAction(async()=>{if(await confirmDestructive({title:'清除市場快取？',description:'價格與配息快取會被移除，且不會立刻自動重抓。',details:['交易紀錄與退休規劃不會受到影響。','可稍後手動同步，否則等下一個 18:00 排程更新。'],confirmLabel:'清除快取'})){await replaceDataSafely(async()=>{const pausedUntil=nextMarketBoundary().toISOString();await marketCacheRepository.clear();marketCaches=[];await saveSettingsPatch({lastSuccessfulMarketSyncDate:null,lastMarketSyncAttemptDate:null,marketAutoSyncPausedUntil:pausedUntil});await load();toast('市場快取已清除；自動重建暫停至下次排程');},{discardSettings:false});}}));
+  document.querySelector('#clearMarket')?.addEventListener('click',uiAction(async()=>{if(await confirmDestructive({title:'清除市場快取？',description:'價格與配息快取會被移除，且不會立刻自動重抓。',details:['交易紀錄與退休規劃不會受到影響。','可稍後手動同步，否則等下一個 17:30 排程更新。'],confirmLabel:'清除快取'})){await replaceDataSafely(async()=>{const pausedUntil=nextMarketBoundary().toISOString();await marketCacheRepository.clear();marketCaches=[];await saveSettingsPatch({lastSuccessfulMarketSyncDate:null,lastMarketSyncAttemptDate:null,marketAutoSyncPausedUntil:pausedUntil});await load();toast('市場快取已清除；自動重建暫停至下次排程');},{discardSettings:false});}}));
   document.querySelector('#clearAll')?.addEventListener('click',uiAction(async()=>{if(await confirmDestructive({title:'清除全部個人資料？',description:'這會永久刪除目前瀏覽器中的投資與退休規劃資料。',details:['包含交易、退休規劃、試算設定與市場快取。', '此操作無法復原，建議先匯出備份。'],confirmLabel:'永久清除'})){await replaceDataSafely(async()=>{await replaceBrowserData({});settingsStore.replace(createDefaultSettings());budgetPlans=[];budgetItems=[];transactions=[];marketCaches=[];clearUndoHistory();await load();toast('本機個人資料已清除');});}}));
 }
 function filePicker(accept, cb) { const input=document.createElement('input'); input.type='file'; input.accept=accept; input.onchange=()=>input.files[0]&&cb(input.files[0]); input.click(); }

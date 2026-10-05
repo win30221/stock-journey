@@ -13,5 +13,5 @@ export const TREND_EVENT_MARKER_SETTINGS = [
   { id: 'showStockDividendMarker', label: '顯示配股點', type: 'STOCK_DIVIDEND' },
 ];
 export const TAIPEI_TIME_ZONE = 'Asia/Taipei';
-export const MARKET_DATA_READY_MINUTES = 18 * 60;
+export const MARKET_DATA_READY_MINUTES = 17 * 60 + 30;
 export const MARKET_RETRY_BASE_MINUTES = 5;

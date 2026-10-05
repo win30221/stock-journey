@@ -22,6 +22,7 @@ test('a new holding fetches dividends from before its purchase for the trailing-
 test('dividend sync upgrades a recent-purchase cache and refreshes the entire required history', async () => {
   const { createMarketSyncPlan } = await import('../js/domain/market.js');
   const recentCache = {
+    prices:[{ date:'2026-09-04', close:110 }],
     priceCoverageFrom:'2026-09-01', priceCheckedThrough:'2026-09-04',
     dividendCoverageFrom:'2026-09-01', dividendCheckedThrough:'2026-09-04', splitCheckedThrough:'2026-09-04',
   };
@@ -35,6 +36,32 @@ test('dividend sync upgrades a recent-purchase cache and refreshes the entire re
   });
   assert.equal(older.dividendStart, '2019-01-02');
   assert.equal(older.dividendNeeded, true);
+});
+
+test('a cache claiming price coverage without any quotes must fetch prices again', async () => {
+  const { createMarketSyncPlan } = await import('../js/domain/market.js');
+  const plan = createMarketSyncPlan({
+    cache:{ prices:[], priceCoverageFrom:'2026-09-01', priceCheckedThrough:'2026-09-04' },
+    transactionStart:'2026-09-01', target:'2026-09-04',
+  });
+  assert.equal(plan.priceNeeded, true);
+  assert.equal(plan.priceStart, '2026-09-01');
+});
+
+test('invalid closing prices cannot complete coverage or advance the incremental query', async () => {
+  const { lastMarketDate, createMarketSyncPlan } = await import('../js/domain/market.js');
+  for (const close of [0, -1, null, '', 'invalid', NaN, Infinity]) {
+    const cache = {
+      prices:[{ date:'2026-09-03', close:100 }, { date:'2026-09-04', close }],
+      priceCoverageFrom:'2026-09-01', priceCheckedThrough:'2026-09-04',
+    };
+    const plan = createMarketSyncPlan({ cache, transactionStart:'2026-09-01', target:'2026-09-04' });
+    assert.equal(lastMarketDate(cache), '2026-09-03');
+    assert.equal(plan.priceNeeded, true);
+    assert.equal(plan.priceStart, '2026-09-04');
+    assert.equal(lastMarketDate({ prices:[{ date:'2026-09-04', close }] }), null);
+  }
+  assert.equal(lastMarketDate({ prices:[{ date:'2026-09-04', close:'110.5' }] }), '2026-09-04');
 });
 
 test('a corrected dividend amount retains its event identity', async () => {

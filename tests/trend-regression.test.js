@@ -2,6 +2,67 @@ const assert=require('node:assert/strict');
 const test=require('node:test');
 const {createAppFixture}=require('./support/app-fixture.cjs');
 
+for (const frequency of ['day', 'month']) {
+  test(`${frequency} chart includes newly synced dates without changing options`, t => {
+    const f = createAppFixture(t);
+    f.run(`
+      page='overview';
+      transactions=[{id:'t',date:'2026-08-03',symbol:'0050',quantity:10,price:100,fee:0,acquisitionType:'MANUAL_BUY'}];
+      marketCaches=[{symbol:'0050',prices:[{date:'2026-08-03',close:100},{date:'2026-08-31',close:110}],dividends:[]}];
+      trendState.frequency='${frequency}';
+      trendState.range='all';
+      render();
+    `);
+    const before = f.nodes.get('#root').innerHTML;
+    f.run(`
+      marketCaches=[{...marketCaches[0],prices:[...marketCaches[0].prices,{date:'2026-09-04',close:120}]}];
+      refreshMarketView();
+    `);
+    assert.equal(f.run('trendSelection().points.at(-1).market'), 1200);
+    assert.equal(f.run('trendSelection().end'), f.run('trendSeries().length-1'));
+    assert.notEqual(f.nodes.get('#root').innerHTML, before);
+    assert.match(f.nodes.get('#root').innerHTML, frequency === 'day' ? /2026\/09\/04/ : /2026 年 09 月/);
+  });
+}
+
+test('preset ranges roll forward with new data while custom ranges stay selected', t => {
+  const f = createAppFixture(t);
+  f.run("trendState={frequency:'day',range:'1m',start:null,end:null};");
+  const old = [{date:'2026-07-03'}, {date:'2026-08-03'}, {date:'2026-08-31'}];
+  f.context.rows = old;
+  f.run('trendSelection(rows)');
+  f.context.rows = [...old, {date:'2026-09-04'}];
+  assert.deepEqual(Array.from(f.run('trendSelection(rows).points'), row => row.date), ['2026-08-31','2026-09-04']);
+  f.run("trendState.range='custom';trendState.start=0;trendState.end=1;");
+  assert.deepEqual(Array.from(f.run('trendSelection(rows).points'), row => row.date), ['2026-07-03','2026-08-03']);
+});
+
+test('overview sync refreshes the chart while preserving birth-month draft and focus', t => {
+  const f = createAppFixture(t);
+  const form = f.element('overviewBirthMonthForm');
+  const input = f.element('overviewBirthMonth');
+  const mount = f.element('trendChartMount');
+  input.value = '1986-02';
+  input.focus();
+  f.run(`
+    page='overview';
+    transactions=[{id:'t',date:'2026-09-01',symbol:'0050',quantity:10,price:100,fee:0,acquisitionType:'MANUAL_BUY'}];
+    marketCaches=[{symbol:'0050',prices:[{date:'2026-09-01',close:100}],dividends:[]}];
+    trendState.frequency='day';
+    repaintTrend();
+  `);
+  const before = mount.innerHTML;
+  f.run(`
+    marketCaches=[{...marketCaches[0],prices:[...marketCaches[0].prices,{date:'2026-09-04',close:120}]}];
+    refreshMarketView();
+  `);
+  assert.notEqual(mount.innerHTML, before);
+  assert.match(mount.innerHTML, /2026\/09\/04/);
+  assert.equal(f.nodes.get('#overviewBirthMonthForm'), form);
+  assert.equal(input.value, '1986-02');
+  assert.equal(f.doc.activeElement, input);
+});
+
 test('trend history keeps transactions and payouts within the as-of date and aggregates monthly totals',async()=>{
   const {calculateTrendHistory,aggregateTrendMonths}=await import('../js/domain/trend.js');
   const txs=[{date:'2026-01-02',symbol:'0050',quantity:10,price:100,fee:0,acquisitionType:'MANUAL_BUY'},{date:'2026-01-09',symbol:'0050',quantity:2,price:110,fee:0,acquisitionType:'RECURRING_INVESTMENT'}];

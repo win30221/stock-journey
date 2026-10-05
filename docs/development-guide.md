@@ -105,6 +105,13 @@ Next.js 靜態匯出可繼續使用靜態主機，但應規劃透過網址開啟
 
 官方參考：[Server／Client Components](https://nextjs.org/docs/app/getting-started/server-and-client-components)、[Static Exports](https://nextjs.org/docs/app/guides/static-exports)、[Project Structure](https://nextjs.org/docs/app/getting-started/project-structure)。採用時核對目標 Next.js 版本。
 
+## 股價同步時間與晚到資料（2026-10-05）
+
+- `MARKET_DATA_READY_MINUTES` 統一控制台北時間 17:30 的當日查詢門檻與自動排程；網頁重新開啟或回到前景也會檢查是否需要同步。
+- 價格查詢成功後，必須確認實際最新報價已涵蓋目標交易日，才能標記完成。來源尚未上架或個股無報價時保留舊價格、顯示資料尚未取得，並以 5、10、20、40 分鐘及最多每 60 分鐘重試。預定重試跨午夜或目標已不是當日，就改等下一個平日 17:30 排程，避免停牌個股持續輪詢；不將缺價自動判定為停牌或已完成。API 錯誤仍沿用原有重試。
+- `createMarketSyncPlan` 的價格增量起點同時核對 `priceCheckedThrough` 與實際最新報價日期，修復舊快取誤標完成的情況。股息及分割同步狀態仍獨立保存，空股息清單可視為成功。
+- `lastMarketDate` 只採計有限且大於 0 的收盤價，讓完成狀態、增量查詢與資產計算使用一致的有效報價標準；零價或無效價格仍可保留在原始快取，但不能讓同步標記完成。只有缺價且其他項目都成功時，才使用跨午夜的延後排程；同時有股息或分割 API 錯誤時，維持原本的退避重試間隔，待 API 恢復後再回到缺價排程。
+
 ## 驗證方式
 
 在專案根目錄執行 `node scripts/build-static.cjs`、`node --test`、`node scripts/build-static.cjs --check`、`git diff --check`。本次驗證環境為 Node.js 26.8.1。
