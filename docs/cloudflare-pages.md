@@ -1,6 +1,8 @@
 # 連線版 Cloudflare 部署
 
-本文件適用 `codex/online-platform` 分支。`main` 保留既有本機版本；連線版的 Pages 正式部署分支必須設定為 `codex/online-platform`。目前僅完成程式與本機測試，尚未建立線上資源或更動控制台。
+本文件適用 `codex/online-platform` 分支。`main` 保留既有本機版本；連線版的 Pages 正式部署分支為 `codex/online-platform`。
+
+2026-11-10 已建立獨立 Pages 專案 `stock-journey-online`，並以 CLI 部署至 https://stock-journey-online.pages.dev/。D1 同名資料庫已初始化，正式環境 `DB` 綁定已完成。Google 登入尚待完成品牌政策確認、建立 Client ID 及設定環境變數；完成前 API 會回傳 503，不會回退本機模式。此專案目前採手動 CLI 部署，尚未連接 GitHub 自動部署；原有 `stock-journey` 專案未變更。
 
 ## 目錄與部署邊界
 
