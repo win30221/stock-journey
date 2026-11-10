@@ -112,6 +112,10 @@ Next.js 靜態匯出可繼續使用靜態主機，但應規劃透過網址開啟
 - `createMarketSyncPlan` 的價格增量起點同時核對 `priceCheckedThrough` 與實際最新報價日期，修復舊快取誤標完成的情況。股息及分割同步狀態仍獨立保存，空股息清單可視為成功。
 - `lastMarketDate` 只採計有限且大於 0 的收盤價，讓完成狀態、增量查詢與資產計算使用一致的有效報價標準；零價或無效價格仍可保留在原始快取，但不能讓同步標記完成。只有缺價且其他項目都成功時，才使用跨午夜的延後排程；同時有股息或分割 API 錯誤時，維持原本的退避重試間隔，待 API 恢復後再回到缺價排程。
 
+## Cloudflare Pages 交付
+
+`node scripts/build-pages.cjs` 沿用 `build-static.cjs` 的 `buildBundle()`，在 `dist/` 產生最新腳本並複製 HTML／CSS，不修改根目錄產物。僅允許發布這三個執行時檔案，避免公開個人 CSV、測試與文件；每次建置清空重建 `dist/`。新增圖片等執行時資源時，須同步更新 Pages 發布清單。Git 整合的建置命令與 `dist` 輸出目錄須於控制台設定，不新增影響既有 Workers 的 Wrangler 設定。詳見 [部署指南](cloudflare-pages.md)。
+
 ## 驗證方式
 
 在專案根目錄執行 `node scripts/build-static.cjs`、`node --test`、`node scripts/build-static.cjs --check`、`git diff --check`。本次驗證環境為 Node.js 26.8.1。

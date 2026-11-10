@@ -15,6 +15,12 @@ git diff --check
 
 `app.bundle.js` 是由來源模組產生的傳統 JavaScript 腳本，供直接開啟本機網頁使用。請修改來源檔後重新建置，勿直接修改產物。發布新版本時，同步更新 `index.html` 的樣式與腳本版本參數，避免沿用舊快取。
 
+## Cloudflare Pages 部署
+
+執行 `node scripts/build-pages.cjs`，再以 `dist/` 作為部署目錄；僅發布 HTML、CSS 與最新 bundle，不包含個人交易 CSV。建置會清空重建 `dist/`，請勿在其中存放資料。直接開啟根目錄 HTML 的方式保持不變。
+
+建立專案、自動部署與資料搬移步驟見 [Cloudflare Pages 部署指南](docs/cloudflare-pages.md)。
+
 ## 程式結構
 
 - `app.js`：畫面、事件、資料載入與市場同步流程。
