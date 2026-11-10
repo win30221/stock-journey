@@ -6,7 +6,7 @@ function emptyDocument() {
 }
 
 test('stock search imports as a native module and shares an in-flight catalog request', async () => {
-  const { createStockSearch } = await import('../js/app/stock-search.js');
+  const { createStockSearch } = await import('../frontend/js/app/stock-search.js');
   let requests = 0, finishRequest;
   let marketCaches = [{ symbol:'0050', name:'元大台灣50', securityType:'twse' }];
   const saved = new Map();
@@ -39,7 +39,7 @@ test('stock search imports as a native module and shares an in-flight catalog re
 });
 
 test('stock search keeps valid cached results when the network and storage writes fail', async () => {
-  const { createStockSearch } = await import('../js/app/stock-search.js');
+  const { createStockSearch } = await import('../frontend/js/app/stock-search.js');
   const cached = JSON.stringify({ savedAt:new Date().toISOString(), rows:[{ symbol:'2330', name:'台積電' }] });
   const search = createStockSearch({
     getMarketCaches:() => [],
@@ -55,7 +55,7 @@ test('stock search keeps valid cached results when the network and storage write
 });
 
 test('editing a stock query clears a stale active option and exposes escaped suggestions', async () => {
-  const { createStockSearch } = await import('../js/app/stock-search.js');
+  const { createStockSearch } = await import('../frontend/js/app/stock-search.js');
   const attributes = new Map(), listeners = new Map();
   const input = {
     value:'',

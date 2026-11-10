@@ -1,10 +1,10 @@
 # 存股退休儀表板
 
-以瀏覽器本機資料儲存交易、退休規劃與市場快取的靜態網頁。直接開啟 `index.html` 即可使用；也可放到靜態網站主機。市場資料同步需要網路連線。
+本分支 `codex/online-platform` 為 Google 登入與 D1 雲端儲存的連線版，沿用原生 JavaScript 前端。Pages 建置使用雲端模式；本機 HTML 仍以瀏覽器儲存交易、退休規劃與市場快取。直接開啟 `frontend/index.html` 即可使用；也可放到靜態網站主機。市場資料同步需要網路連線。
 
 ## 開發與驗證
 
-專案不需要安裝套件，使用 Node.js 執行以下指令（本次驗證版本為 26.8.1）：
+專案不需要安裝套件，使用 Node.js 執行以下指令（連線版驗證版本為 24.14.1）：
 
 ```sh
 node scripts/build-static.cjs
@@ -13,21 +13,25 @@ node scripts/build-static.cjs --check
 git diff --check
 ```
 
-`app.bundle.js` 是由來源模組產生的傳統 JavaScript 腳本，供直接開啟本機網頁使用。請修改來源檔後重新建置，勿直接修改產物。發布新版本時，同步更新 `index.html` 的樣式與腳本版本參數，避免沿用舊快取。
+`frontend/app.bundle.js` 是由來源模組產生的傳統 JavaScript 腳本，供直接開啟本機網頁使用。請修改來源檔後重新建置，勿直接修改產物。發布新版本時，同步更新 `frontend/index.html` 的樣式與腳本版本參數，避免沿用舊快取。
 
 ## Cloudflare Pages 部署
 
-執行 `node scripts/build-pages.cjs`，再以 `dist/` 作為部署目錄；僅發布 HTML、CSS、最新 bundle 與頁面提供下載的公開範例 CSV，不複製其他個人檔案。建置會清空重建 `dist/`，請勿在其中存放資料。直接開啟根目錄 HTML 的方式保持不變。
+執行 `node scripts/build-pages.cjs`，再以 `dist/` 作為部署目錄；僅發布 HTML、CSS、最新 bundle 與頁面提供下載的公開範例 CSV，不複製其他個人檔案。建置會清空重建 `dist/`，請勿在其中存放資料。本機模式改為直接開啟 frontend/index.html。連線版還需部署 Pages Functions 並設定 D1 與 Google Client ID。
 
 建立專案、自動部署與資料搬移步驟見 [Cloudflare Pages 部署指南](docs/cloudflare-pages.md)。
 
 ## 程式結構
 
-- `app.js`：畫面、事件、資料載入與市場同步流程。
-- `js/app/`：共用設定 store、投資摘要模型、非同步作業控制與股票搜尋。
-- `js/domain/`：投資、配息、退休、趨勢及匯入驗證邏輯。
-- `js/components/`：對話框、確認視窗與提示元件。
-- `js/services/`、`js/repositories/`、`js/lib/`：市場 API、本機資料存取與共用工具。
+- `frontend/`：所有瀏覽器來源與靜態資源。
+- `backend/server/`、`backend/migrations/`：API、登入與 D1 SQL。
+- `functions/`：Cloudflare Pages 路由轉接。
+
+- `frontend/app.js`：畫面、事件、資料載入與市場同步流程。
+- `frontend/js/app/`：共用設定 store、投資摘要模型、非同步作業控制與股票搜尋。
+- `frontend/js/domain/`：投資、配息、退休、趨勢及匯入驗證邏輯。
+- `frontend/js/components/`：對話框、確認視窗與提示元件。
+- `frontend/js/services/`、`frontend/js/repositories/`、`frontend/js/lib/`：市場 API、本機資料存取與共用工具。
 - `tests/`、`tests/support/`：單元與整合回歸測試，以及隔離的測試環境。
 
 市場同步可取消；清除或還原資料會等待進行中的寫入結束。設定儲存採用輸入當下的值並依序寫入，避免切換頁面、重試或載入中的舊資料覆蓋新值。

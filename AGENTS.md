@@ -4,16 +4,16 @@
 
 ## 分工
 
-- `app.js` 是目前的瀏覽器入口、畫面與操作協調層，有啟動副作用；不得從可重用模組或伺服器程式匯入。
-- `js/domain/` 放計算與驗證規則。不得依賴 DOM、瀏覽器儲存、網路或畫面層。
-- `js/app/portfolio-model.js` 組合畫面所需資料；輸入日期與資料，輸出資料，不產生 HTML、不讀取本機儲存。
-- `js/app/settings.js` 管理預設值、舊設定正規化及設定 store。設定寫入走 `settingsStore.save()`；載入／還原走 `replace()`，並遵守寫入排隊與 revision 檢查。
-- `js/app/async-state.js` 管理取消與自動儲存。`js/app/stock-search.js`、`js/components/` 目前仍屬瀏覽器 UI 層。
-- `js/repositories/` 與 `js/services/` 是資料與外部服務介面。核心透過參數接收介面，勿直接匯入特定瀏覽器實作。
+- `frontend/app.js` 是目前的瀏覽器入口、畫面與操作協調層，有啟動副作用；不得從可重用模組或伺服器程式匯入。
+- `frontend/js/domain/` 放計算與驗證規則。不得依賴 DOM、瀏覽器儲存、網路或畫面層。
+- `frontend/js/app/portfolio-model.js` 組合畫面所需資料；輸入日期與資料，輸出資料，不產生 HTML、不讀取本機儲存。
+- `frontend/js/app/settings.js` 管理預設值、舊設定正規化及設定 store。設定寫入走 `settingsStore.save()`；載入／還原走 `replace()`，並遵守寫入排隊與 revision 檢查。
+- `frontend/js/app/async-state.js` 管理取消與自動儲存。`frontend/js/app/stock-search.js`、`frontend/js/components/` 目前仍屬瀏覽器 UI 層。
+- `frontend/js/repositories/` 與 `frontend/js/services/` 是資料與外部服務介面。核心透過參數接收介面，勿直接匯入特定瀏覽器實作。
 
 ## 修改原則
 
-- 保留既有使用流程與直接開啟 `index.html` 的能力，直到使用者要求改變交付方式。
+- 保留既有使用流程與直接開啟 `frontend/index.html` 的能力，直到使用者要求改變交付方式。
 - 只有共用、可獨立驗證或需要獨立替換的責任才抽模組；優先擴充既有責任明確的檔案。
 - 核心函式使用明確輸入，避免新增隱藏全域狀態。共享陣列／設定以新參照替換，不在渲染中修改；快取與訂閱依賴這項契約。
 - 顯示期間使用台北日期；需要跨環境重用的新計算入口必須接收日期。設定中的百分比與計算使用的小數比例只能在明確邊界轉換。
@@ -21,7 +21,7 @@
 - 保留備份格式相容性；格式更動要搭配版本與遷移。缺少市場資料必須保留估算／資料不足提示。
 - UI 變更保留可見焦點、欄位標籤、錯誤提示與鍵盤操作；圖表保留文字或表格替代呈現。
 - 新函式採用可讀的多行格式；不要把整個流程壓成一行。不要為整理格式重寫未涉及的整份檔案。
-- Next.js 遷移按頁面與功能進行；目前尚未完成瀏覽器入口的 mount/dispose，不能直接把整個 `app.js` 放進 React effect 當成已遷移。
+- Next.js 遷移按頁面與功能進行；目前尚未完成瀏覽器入口的 mount/dispose，不能直接把整個 `frontend/app.js` 放進 React effect 當成已遷移。
 
 ## 驗證與交付
 
@@ -34,8 +34,12 @@ node scripts/build-static.cjs --check
 git diff --check
 ```
 
-`app.bundle.js` 是產物，只能透過建置更新。新增執行時模組時更新 `scripts/build-static.cjs` 的來源清單。發布樣式／腳本變更時更新 `index.html` 版本參數。
+`frontend/app.bundle.js` 是產物，只能透過建置更新。新增執行時模組時更新 `scripts/build-static.cjs` 的來源清單。發布樣式／腳本變更時更新 `frontend/index.html` 版本參數。
 
 測試集中在 `tests/`，共用環境在 `tests/support/`。計算或儲存語意變更補對應行為回歸；不要只用字串斷言取代行為驗證。`architecture.test.js` 檢查可重用模組的依賴及無瀏覽器匯入能力。
 
 完成時說明變更、驗證結果及未完成的驗證。模擬 DOM 測試不等於實際瀏覽器驗收；遇到工具限制需如實記錄。改變模組介面或目錄責任時，一併更新指南。
+
+## 連線版目錄
+
+本分支為 `codex/online-platform`，前端位於 `frontend/`，後端位於 `backend/`。根目錄 `functions/` 只保留 Pages 路由入口。後端僅能沿用純 domain／常數，不能匯入瀏覽器入口。雲端個人資料使用 D1 帳號快照與 revision 檢查，登入失效或衝突不可回退本機或無條件覆蓋。發布前依 docs/cloudflare-pages.md 設定正式分支、DB 與 GOOGLE_CLIENT_ID。

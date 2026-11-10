@@ -26,9 +26,9 @@ function csvWith(transaction) {
 }
 
 test('transaction entry points reject the same invalid fields with their own context', async () => {
-  const { validateTransactionFields } = await import('../js/domain/transaction-validation.js');
-  const { planCsvTransactionImport } = await import('../js/domain/transaction-import.js');
-  const { validateBackupPayload } = await import('../js/domain/backup.js');
+  const { validateTransactionFields } = await import('../frontend/js/domain/transaction-validation.js');
+  const { planCsvTransactionImport } = await import('../frontend/js/domain/transaction-import.js');
+  const { validateBackupPayload } = await import('../frontend/js/domain/backup.js');
   const cases = [
     ['date', '2023-02-29', 'invalidDate', /日期/],
     ['acquisitionType', 'toString', 'invalidAcquisitionType', /取得方式/],
@@ -55,9 +55,9 @@ test('transaction entry points reject the same invalid fields with their own con
 });
 
 test('shared validation preserves valid leap dates, leading-zero symbols, and stock dividends', async () => {
-  const { validateTransactionFields, isIsoCalendarDate } = await import('../js/domain/transaction-validation.js');
-  const { planCsvTransactionImport, isIsoCalendarDate:legacyDateValidator } = await import('../js/domain/transaction-import.js');
-  const { validateBackupPayload } = await import('../js/domain/backup.js');
+  const { validateTransactionFields, isIsoCalendarDate } = await import('../frontend/js/domain/transaction-validation.js');
+  const { planCsvTransactionImport, isIsoCalendarDate:legacyDateValidator } = await import('../frontend/js/domain/transaction-import.js');
+  const { validateBackupPayload } = await import('../frontend/js/domain/backup.js');
   assert.equal(isIsoCalendarDate, legacyDateValidator);
   assert.equal(isIsoCalendarDate('2024-02-29'), true);
   assert.equal(isIsoCalendarDate('2024-04-31'), false);
@@ -77,8 +77,8 @@ test('shared validation preserves valid leap dates, leading-zero symbols, and st
 });
 
 test('default settings reset every chart option without sharing mutable state', async () => {
-  const { createDefaultSettings } = await import('../js/app/settings.js');
-  const { TREND_EVENT_MARKER_SETTINGS } = await import('../js/lib/constants.js');
+  const { createDefaultSettings } = await import('../frontend/js/app/settings.js');
+  const { TREND_EVENT_MARKER_SETTINGS } = await import('../frontend/js/lib/constants.js');
   const previous = createDefaultSettings();
   previous.showTotalReturn = false;
   previous.gainMilestoneInterval = 10000;
@@ -94,7 +94,7 @@ test('default settings reset every chart option without sharing mutable state', 
 });
 
 test('per-share number formatting is exported without a currency suffix', async () => {
-  const { fmtPerShareNumber } = await import('../js/lib/format.js');
+  const { fmtPerShareNumber } = await import('../frontend/js/lib/format.js');
   assert.equal(fmtPerShareNumber(-1.23456), '-1.2346');
   assert.equal(fmtPerShareNumber(0), '0');
   assert.equal(fmtPerShareNumber(null), '—');

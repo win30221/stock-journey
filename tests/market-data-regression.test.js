@@ -2,8 +2,8 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 
 test('a new holding fetches dividends from before its purchase for the trailing-year forecast', async () => {
-  const { createMarketSyncPlan } = await import('../js/domain/market.js');
-  const { calculateProjectedAnnualDividends } = await import('../js/domain/dividends.js');
+  const { createMarketSyncPlan } = await import('../frontend/js/domain/market.js');
+  const { calculateProjectedAnnualDividends } = await import('../frontend/js/domain/dividends.js');
   const target = '2026-09-04';
   const plan = createMarketSyncPlan({ transactionStart:'2026-09-01', target });
   const history = [{ cash:2, exDate:'2026-02-01', paymentDate:'2026-03-01' }];
@@ -20,7 +20,7 @@ test('a new holding fetches dividends from before its purchase for the trailing-
 });
 
 test('dividend sync upgrades a recent-purchase cache and refreshes the entire required history', async () => {
-  const { createMarketSyncPlan } = await import('../js/domain/market.js');
+  const { createMarketSyncPlan } = await import('../frontend/js/domain/market.js');
   const recentCache = {
     prices:[{ date:'2026-09-04', close:110 }],
     priceCoverageFrom:'2026-09-01', priceCheckedThrough:'2026-09-04',
@@ -39,7 +39,7 @@ test('dividend sync upgrades a recent-purchase cache and refreshes the entire re
 });
 
 test('a cache claiming price coverage without any quotes must fetch prices again', async () => {
-  const { createMarketSyncPlan } = await import('../js/domain/market.js');
+  const { createMarketSyncPlan } = await import('../frontend/js/domain/market.js');
   const plan = createMarketSyncPlan({
     cache:{ prices:[], priceCoverageFrom:'2026-09-01', priceCheckedThrough:'2026-09-04' },
     transactionStart:'2026-09-01', target:'2026-09-04',
@@ -49,7 +49,7 @@ test('a cache claiming price coverage without any quotes must fetch prices again
 });
 
 test('invalid closing prices cannot complete coverage or advance the incremental query', async () => {
-  const { lastMarketDate, createMarketSyncPlan } = await import('../js/domain/market.js');
+  const { lastMarketDate, createMarketSyncPlan } = await import('../frontend/js/domain/market.js');
   for (const close of [0, -1, null, '', 'invalid', NaN, Infinity]) {
     const cache = {
       prices:[{ date:'2026-09-03', close:100 }, { date:'2026-09-04', close }],
@@ -65,7 +65,7 @@ test('invalid closing prices cannot complete coverage or advance the incremental
 });
 
 test('a corrected dividend amount retains its event identity', async () => {
-  const { dividendKey, mergeRows } = await import('../js/domain/market.js');
+  const { dividendKey, mergeRows } = await import('../frontend/js/domain/market.js');
   const original = { exDate:'2026-02-01', paymentDate:'2026-03-01', announcementDate:'2026-01-01', cash:2, stock:0 };
   const corrected = { ...original, cash:3 };
   const events = mergeRows([original], [corrected], dividendKey);
@@ -75,7 +75,7 @@ test('a corrected dividend amount retains its event identity', async () => {
 });
 
 test('dividend forecasts distinguish absent coverage, covered zero dividends, and weekend freshness', async () => {
-  const { calculateProjectedAnnualDividends } = await import('../js/domain/dividends.js');
+  const { calculateProjectedAnnualDividends } = await import('../frontend/js/domain/dividends.js');
   const transactions = [{ symbol:'0050', date:'2026-09-01', quantity:100 }];
   const missing = calculateProjectedAnnualDividends({ transactions, marketCaches:[], asOfDate:'2026-09-06' });
   assert.equal(missing.annual, 0);
@@ -91,7 +91,7 @@ test('dividend forecasts distinguish absent coverage, covered zero dividends, an
 });
 
 test('forecast coverage checks every current holding without requiring future holdings', async () => {
-  const { calculateProjectedAnnualDividends } = await import('../js/domain/dividends.js');
+  const { calculateProjectedAnnualDividends } = await import('../frontend/js/domain/dividends.js');
   const forecast = calculateProjectedAnnualDividends({
     transactions:[
       { symbol:'0050', date:'2026-09-01', quantity:100 },
@@ -106,7 +106,7 @@ test('forecast coverage checks every current holding without requiring future ho
 });
 
 test('completed dividend months do not repeat or skip at month-end boundaries', async () => {
-  const { summarizeDividends } = await import('../js/domain/dividends.js');
+  const { summarizeDividends } = await import('../frontend/js/domain/dividends.js');
   const transactions = [{ date:'2026-05-01' }];
   const summary = summarizeDividends([], transactions, new Date(2026, 8, 6), '2026-09-06');
   assert.deepEqual(summary.months, ['2026-05', '2026-06', '2026-07', '2026-08']);
@@ -117,7 +117,7 @@ test('completed dividend months do not repeat or skip at month-end boundaries', 
 });
 
 test('FinMind timeout includes response-body delivery after headers arrive', async t => {
-  const { fetchFinMindData } = await import('../js/services/finmind.js');
+  const { fetchFinMindData } = await import('../frontend/js/services/finmind.js');
   let signal;
   t.mock.method(globalThis, 'fetch', async (_url, options) => {
     signal = options.signal;
@@ -128,7 +128,7 @@ test('FinMind timeout includes response-body delivery after headers arrive', asy
 });
 
 test('FinMind accepts external cancellation while reading the body', async t => {
-  const { fetchFinMindData } = await import('../js/services/finmind.js');
+  const { fetchFinMindData } = await import('../frontend/js/services/finmind.js');
   const controller = new AbortController();
   let readingBody;
   const bodyStarted = new Promise(resolve => { readingBody = resolve; });
@@ -145,7 +145,7 @@ test('FinMind accepts external cancellation while reading the body', async t => 
 });
 
 test('FinMind skips the network for an already-cancelled request', async t => {
-  const { fetchFinMindData } = await import('../js/services/finmind.js');
+  const { fetchFinMindData } = await import('../frontend/js/services/finmind.js');
   const controller = new AbortController();
   controller.abort();
   const fetchMock = t.mock.method(globalThis, 'fetch', async () => { throw Error('should not fetch'); });
@@ -154,13 +154,13 @@ test('FinMind skips the network for an already-cancelled request', async t => {
 });
 
 test('FinMind rejects malformed datasets rather than treating them as a zero-dividend snapshot', async t => {
-  const { fetchFinMindData } = await import('../js/services/finmind.js');
+  const { fetchFinMindData } = await import('../frontend/js/services/finmind.js');
   t.mock.method(globalThis, 'fetch', async () => ({ ok:true, json:async () => ({ status:200, data:null }) }));
   await assert.rejects(() => fetchFinMindData('TaiwanStockDividend'), /資料集合格式錯誤/);
 });
 
 test('FinMind preserves a valid empty snapshot and quota errors', async t => {
-  const { fetchFinMindData } = await import('../js/services/finmind.js');
+  const { fetchFinMindData } = await import('../frontend/js/services/finmind.js');
   let requests = 0;
   t.mock.method(globalThis, 'fetch', async () => ++requests === 1
     ? { ok:true, json:async () => ({ status:200, data:[] }) }

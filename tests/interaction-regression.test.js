@@ -5,7 +5,7 @@ const test = require('node:test');
 const vm = require('node:vm');
 
 function appFunction(name) {
-  const source = fs.readFileSync(path.resolve(__dirname, '..', name === 'trendMonthlyDataTable' ? 'js/components/asset-trend-chart.js' : 'app.js'), 'utf8');
+  const source = fs.readFileSync(path.resolve(__dirname, '../frontend', name === 'trendMonthlyDataTable' ? 'js/components/asset-trend-chart.js' : 'app.js'), 'utf8');
   const result = source.match(new RegExp(`function ${name}\\([^]*?\\n\\}`))?.[0];
   assert.ok(result, `${name} should exist`);
   return result;
@@ -47,7 +47,7 @@ test('custom dialogs contain keyboard focus, respect combobox Escape and restore
   f.nodes.set('.shell',background); trigger.focus();
   let closed=0;
   vm.createContext(f.context);
-  vm.runInContext(fs.readFileSync(path.resolve(__dirname, '..', 'js/components/dialog.js'),'utf8').replace(/^export /gm,''),f.context);
+  vm.runInContext(fs.readFileSync(path.resolve(__dirname, '../frontend', 'js/components/dialog.js'),'utf8').replace(/^export /gm,''),f.context);
   f.context.bindDialogFocus(dialog,{initialFocus:'#field',onClose:()=>closed++,returnFocus:()=>trigger.focus()});
   f.flush();
   assert.equal(f.document.activeElement,field);
@@ -78,7 +78,7 @@ test('replacing an open dialog removes old handlers and keeps the new background
   f.nodes.set('.shell',background);
   oldDialog.children=[f.element()]; nextDialog.children=[f.element()];
   vm.createContext(f.context);
-  vm.runInContext(fs.readFileSync(path.resolve(__dirname, '..', 'js/components/dialog.js'),'utf8').replace(/^export /gm,''),f.context);
+  vm.runInContext(fs.readFileSync(path.resolve(__dirname, '../frontend', 'js/components/dialog.js'),'utf8').replace(/^export /gm,''),f.context);
   f.context.bindDialogFocus(oldDialog); oldDialog.isConnected=false;
   f.context.bindDialogFocus(nextDialog); f.flush();
   assert.equal(f.document.activeElement,nextDialog.children[0]);
@@ -139,7 +139,7 @@ test('budget validation summary focuses the invalid field without changing the p
 });
 
 test('JSON backup import keeps its native file control keyboard reachable with a visible focus surface', () => {
-  const styles=fs.readFileSync(path.resolve(__dirname, '..', 'styles.css'),'utf8'), source=fs.readFileSync(path.resolve(__dirname, '..', 'app.js'),'utf8');
+  const styles=fs.readFileSync(path.resolve(__dirname, '../frontend', 'styles.css'),'utf8'), source=fs.readFileSync(path.resolve(__dirname, '../frontend', 'app.js'),'utf8');
   const inputRules=[...styles.matchAll(/\.file-label input\s*\{([^}]+)\}/g)].map(match=>match[1]).join(' ');
   assert.match(source,/<input id="restore" type="file"[^>]+aria-label="匯入 JSON 備份"/);
   assert.doesNotMatch(inputRules,/display:\s*none|visibility:\s*hidden/);

@@ -1725,3 +1725,9 @@ body.dialog-open { overscroll-behavior: none; }
   }
   .holding-trend-modal .modal-header { padding-block: 8px; }
 }
+/* Account controls share the existing form and focus styles. */
+.cloud-login { max-width: 560px; margin: 10vh auto; padding: 28px; }
+.cloud-login button, #googleSignIn { margin: 12px 0; }
+.cloud-login p { line-height: 1.7; }
+.account-panel { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 12px 0 20px; }
+.account-panel span { overflow-wrap: anywhere; }

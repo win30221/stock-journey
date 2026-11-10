@@ -4,7 +4,7 @@ const { execFileSync } = require('node:child_process');
 const path = require('node:path');
 const { createAppFixture } = require('./support/app-fixture.cjs');
 
-const model = import('../js/app/portfolio-model.js');
+const model = import('../frontend/js/app/portfolio-model.js');
 const transaction = { id:'t', symbol:'0050', date:'2026-01-01', quantity:100, price:10, fee:0, acquisitionType:'MANUAL_BUY' };
 function input() {
   return {
@@ -54,7 +54,7 @@ test('explicit calendar dates give the same reporting month on servers in differ
   `;
   const snapshots = ['UTC', 'Asia/Taipei', 'America/Los_Angeles'].map(TZ =>
     execFileSync(process.execPath, ['--input-type=module', '-e', source], {
-      cwd:path.resolve(__dirname, '..'), env:{ ...process.env, TZ }, encoding:'utf8',
+      cwd:path.resolve(__dirname, '../frontend'), env:{ ...process.env, TZ }, encoding:'utf8',
     }));
   assert.equal(snapshots[0], snapshots[1]);
   assert.equal(snapshots[1], snapshots[2]);

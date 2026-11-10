@@ -10,7 +10,9 @@ import { checkedThrough, createMarketSyncPlan, dateMin, dividendKey, firstMarket
 import { validateBackupPayload } from './js/domain/backup.js';
 import { planCsvTransactionImport } from './js/domain/transaction-import.js';
 import { createStockSearch } from './js/app/stock-search.js';
-import { budgetItemRepository, budgetPlanRepository, marketCacheRepository, replaceBrowserData, settingsRepository, transactionRepository } from './js/repositories/browser.js';
+import { budgetItemRepository, budgetPlanRepository, marketCacheRepository, replaceBrowserData, settingsRepository, transactionRepository, useCloudDataStore, readLocalPersonalData } from './js/repositories/browser.js';
+import { createCloudDataStore } from './js/repositories/cloud.js';
+import { isCloudMode, cloudRequest, loadGoogleSignIn } from './js/app/cloud-session.js';
 import { fetchFinMindData } from './js/services/finmind.js';
 import { confirmDestructive } from './js/components/confirmation.js';
 import { createAssetTrendChart } from './js/components/asset-trend-chart.js';
@@ -43,6 +45,8 @@ const comparisonPage = createComparisonPage({
 });
 let dataMaintenance = false, dataRevision = 0;
 let loadQueue = Promise.resolve();
+let cloudUser = null;
+let accountStore = null;
 const settingsStore = createSettingsStore({ repository:settingsRepository, initialSettings:settings });
 // The legacy renderer reads this reference; all changes are published by the store.
 settings = settingsStore.getSnapshot();
@@ -167,6 +171,7 @@ const PAGE_LABELS = {
   settings: '設定',
 };
 async function load(options = {}) {
+  if (isCloudMode() && !cloudUser) return startCloudSession();
   const revision=dataRevision;
   const pending=loadQueue.then(()=>revision===dataRevision?hydrateBrowserData(options,revision):false);
   loadQueue=pending.catch(()=>false);
@@ -297,11 +302,13 @@ function missingPriceRetryAfter(target, retryCount, now = new Date()) {
   return retry.toISOString();
 }
 function scheduleMarketSyncCheck() {
+  if (isCloudMode() && !cloudUser) return;
   clearTimeout(marketSyncTimer);
   const now=new Date(), retryDates=[marketCalendarRetryAfter,...marketCaches.map(cache=>cache.retryAfter)].map(value=>value&&new Date(value)).filter(date=>date&&date>now), candidates=[nextMarketBoundary(now),...retryDates].sort((a,b)=>a-b), delay=Math.max(15000,candidates[0]-now);
   marketSyncTimer=setTimeout(async()=>{await maybeAutoSyncMarket();scheduleMarketSyncCheck();},Math.min(delay,2147483647));
 }
 async function maybeAutoSyncMarket() {
+  if (isCloudMode() && !cloudUser) return;
   if (!transactions.length || dataMaintenance || isMarketAutoSyncPaused() || marketTask.busy || autoSyncInProgress) return;
   autoSyncInProgress = true;
   try { await syncMarket({ automatic:true }); }
@@ -338,6 +345,7 @@ function refreshMarketView() {
   render();
 }
 async function syncMarket(options = {}) {
+  if (isCloudMode() && !cloudUser) return;
   if (dataMaintenance || marketTask.busy) return;
   const automatic=Boolean(options.automatic);
   if (!transactions.length) { if(!automatic)toast('請先匯入交易紀錄');return; }
@@ -536,7 +544,7 @@ function navIcon(id) {
   return `<svg viewBox="0 0 24 24" aria-hidden="true">${paths[id]||''}</svg>`;
 }
 function settingsPage() {
-  return `<section class="settings-page"><section class="panel setting"><div class="panel-title"><div><p class="eyebrow">股息現金流</p><h2>股息歸屬方式</h2><p>選擇現金流報表採用的月份計算口徑。</p></div></div><label>股息歸屬依據<select id="basis" data-setting-control><option value="PAYMENT_DATE" ${settings.dividendDateBasis==='PAYMENT_DATE'?'selected':''}>依發放日（建議）</option><option value="EX_DIVIDEND_DATE" ${settings.dividendDateBasis==='EX_DIVIDEND_DATE'?'selected':''}>依除息日</option></select><small>會影響股息現金流的月份歸屬。</small></label></section>${chartSettingsPanel()}<section class="two-col settings-two-col"><section class="panel setting"><div class="panel-title"><div><p class="eyebrow">資料備份與維護</p><h2>備份與還原</h2><p>備份包含交易、退休生活預算、試算條件與所有設定。</p></div></div><div class="setting-actions"><button class="secondary" id="backup">匯出 JSON 備份</button><label class="file-label">匯入 JSON 備份<input id="restore" type="file" accept="application/json,.json" aria-label="匯入 JSON 備份" /></label></div></section><section class="panel setting"><div class="panel-title"><div><p class="eyebrow">市場資料</p><h2>快取維護</h2><p>清除後不影響交易與退休生活預算，可隨時重新同步。</p></div></div><button class="danger subtle setting-action" id="clearMarket">清除市場快取</button></section></section><section class="panel setting-danger-zone settings-danger-card"><div><div><p class="eyebrow">危險區</p><h2>清除全部個人資料</h2><p>這會永久刪除目前瀏覽器內的交易、退休生活預算、試算設定與市場快取。</p></div><button class="danger setting-action" id="clearAll">清除全部個人資料</button></div></section></section>`;
+  return `<section class="settings-page"><section class="panel setting"><div class="panel-title"><div><p class="eyebrow">股息現金流</p><h2>股息歸屬方式</h2><p>選擇現金流報表採用的月份計算口徑。</p></div></div><label>股息歸屬依據<select id="basis" data-setting-control><option value="PAYMENT_DATE" ${settings.dividendDateBasis==='PAYMENT_DATE'?'selected':''}>依發放日（建議）</option><option value="EX_DIVIDEND_DATE" ${settings.dividendDateBasis==='EX_DIVIDEND_DATE'?'selected':''}>依除息日</option></select><small>會影響股息現金流的月份歸屬。</small></label></section>${chartSettingsPanel()}<section class="two-col settings-two-col"><section class="panel setting"><div class="panel-title"><div><p class="eyebrow">資料備份與維護</p><h2>備份與還原</h2><p>備份包含交易、退休生活預算、試算條件與所有設定。</p></div></div><div class="setting-actions"><button class="secondary" id="backup">匯出 JSON 備份</button><label class="file-label">匯入 JSON 備份<input id="restore" type="file" accept="application/json,.json" aria-label="匯入 JSON 備份" /></label></div></section><section class="panel setting"><div class="panel-title"><div><p class="eyebrow">市場資料</p><h2>快取維護</h2><p>清除後不影響交易與退休生活預算，可隨時重新同步。</p></div></div><button class="danger subtle setting-action" id="clearMarket">清除市場快取</button></section></section><section class="panel setting-danger-zone settings-danger-card"><div><div><p class="eyebrow">危險區</p><h2>清除全部個人資料</h2><p>${cloudUser ? '這會永久刪除目前登入帳號的交易、退休生活預算及試算設定，並清除這台裝置的市場快取。' : '這會永久刪除目前瀏覽器內的交易、退休生活預算、試算設定與市場快取。'}</p></div><button class="danger setting-action" id="clearAll">清除全部個人資料</button></div></section></section>`;
 }
 function navBadge(id, onboarding = getOnboardingState()) {
   if (onboarding.isComplete) return '';
@@ -563,11 +571,36 @@ function facebookCommunityCard(placement) {
   </section>`;
 }
 function render() {
+  if (isCloudMode() && !cloudUser) return;
   document.body?.classList.remove('mobile-nav-open');
   const m = page === 'overview' ? metrics() : null;
   const onboarding = getOnboardingState();
   root.innerHTML = `<div class="shell"><aside><div class="sidebar-heading"><a class="brand" href="#overview"><span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 18 18 5M9 5h9v9"/></svg></span><b>存股退休</b><em>STOCK JOURNEY</em></a><button class="mobile-menu-toggle" type="button" aria-label="開啟菜單" aria-controls="mobileNavigationPanel" aria-expanded="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg></button></div><div class="mobile-nav-panel" id="mobileNavigationPanel"><div class="mobile-nav-heading"><div><b>頁面導覽</b><span>目前：${PAGE_LABELS[page]}</span></div><button class="mobile-nav-close" type="button" aria-label="關閉菜單"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button></div><nav aria-label="主要導覽">${Object.entries(PAGE_LABELS).map(([id,name])=>`${id==='stock-comparison'?'<p class="nav-section-label">額外工具</p>':''}<button data-page="${id}" class="${page===id?'active':''}" ${page===id?'aria-current="page"':''}><i>${navIcon(id)}</i><span>${name}</span>${navBadge(id, onboarding)}</button>`).join('')}</nav>${facebookCommunityCard('sidebar')}<div class="privacy"><span aria-hidden="true"></span><b>資料只留在這台裝置</b><a href="#settings" data-page="settings">備份與設定</a></div></div><button class="mobile-nav-backdrop" type="button" aria-label="關閉菜單" aria-hidden="true" tabindex="-1"></button></aside><main id="main-content" tabindex="-1">${header()}${facebookCommunityCard('mobile')}${splitDataNotice()}${page === 'overview' ? blueDashboardOverview(m) : page === 'budget' ? livingBudgetPage() : page === 'retirement-calculator' ? retirementCalculatorPage() : page === 'transactions' ? transactionsPage() : page === 'stock-comparison' ? comparisonPage.render() : page === 'market-data' ? marketDataPage() : page === 'settings' ? settingsPage() : dividendsPage()}</main></div>${transactionModal()}${aiImportGuide()}<div id="toast" role="status" aria-live="polite"></div>`;
   bind();
+  if (cloudUser) {
+    const accountPanel = document.createElement('section');
+    accountPanel.className = 'account-panel';
+    accountPanel.setAttribute('aria-label', '登入帳號');
+    const label = document.createElement('span');
+    label.textContent = `已登入：${cloudUser.name}（${cloudUser.email}）`;
+    const logoutButton = document.createElement('button');
+    logoutButton.type = 'button';
+    logoutButton.className = 'secondary';
+    logoutButton.textContent = '儲存並登出';
+    logoutButton.addEventListener('click', uiAction(logoutCloudAccount, '無法登出'));
+    accountPanel.append(label, logoutButton);
+    if (page === 'settings') {
+      const localBackupButton = document.createElement('button');
+      localBackupButton.type = 'button';
+      localBackupButton.className = 'secondary';
+      localBackupButton.textContent = '下載這台裝置的舊本機備份';
+      localBackupButton.addEventListener('click', uiAction(exportLocalAccountBackup));
+      accountPanel.append(localBackupButton);
+    }
+    document.querySelector('#main-content')?.prepend(accountPanel);
+    const privacyLabel = document.querySelector('.privacy b');
+    if (privacyLabel) privacyLabel.textContent = '個人資料儲存在雲端帳號';
+  }
 }
 function splitDataNotice() {
   if (['stock-comparison', 'settings', 'budget'].includes(page) || !transactions.length) return '';
@@ -586,7 +619,7 @@ function splitEventDetails(stock) {
 function header() {
   if (page === 'stock-comparison') return '<header><div><p class="eyebrow">額外工具</p><h1>股票比較</h1><p>同一段時間，從同一個起點看表現。</p></div></header>';
   const marketSummary=marketSyncSummary();
-  const subtitle=page==='stock-comparison' ? '選擇股票與日期，比較分割調整後的累積漲跌幅或含息總報酬。' : page==='budget' ? '從生活支出建立退休月現金流目標。' : page==='retirement-calculator' ? '結合持股、生活預算與投入計畫，推算退休時間。' : page==='transactions' ? '管理交易紀錄，系統會自動計算持股與成本。' : page==='settings' ? '顯示方式與本機資料管理。' : `市場資料：${marketHeaderLabel(marketSummary)}`;
+  const subtitle=page==='stock-comparison' ? '選擇股票與日期，比較分割調整後的累積漲跌幅或含息總報酬。' : page==='budget' ? '從生活支出建立退休月現金流目標。' : page==='retirement-calculator' ? '結合持股、生活預算與投入計畫，推算退休時間。' : page==='transactions' ? '管理交易紀錄，系統會自動計算持股與成本。' : page==='settings' ? (cloudUser?'顯示方式與雲端帳號資料管理。':'顯示方式與本機資料管理。') : `市場資料：${marketHeaderLabel(marketSummary)}`;
   const action='';
   return `<header><div><p class="eyebrow">存股退休</p><h1>${PAGE_LABELS[page]}</h1><p class="market-as-of" role="status" aria-live="polite" aria-atomic="true">${subtitle}</p></div><div class="header-actions">${action}</div></header>`;
 }
@@ -1554,7 +1587,7 @@ function bind() {
   addNumberSteppers();
   document.querySelector('#backup')?.addEventListener('click', backup); document.querySelector('#restore')?.addEventListener('change', e => restore(e.target.files[0]));
   document.querySelector('#clearMarket')?.addEventListener('click',uiAction(async()=>{if(await confirmDestructive({title:'清除市場快取？',description:'價格與配息快取會被移除，且不會立刻自動重抓。',details:['交易紀錄與退休規劃不會受到影響。','可稍後手動同步，否則等下一個 17:30 排程更新。'],confirmLabel:'清除快取'})){await replaceDataSafely(async()=>{const pausedUntil=nextMarketBoundary().toISOString();await marketCacheRepository.clear();marketCaches=[];await saveSettingsPatch({lastSuccessfulMarketSyncDate:null,lastMarketSyncAttemptDate:null,marketAutoSyncPausedUntil:pausedUntil});await load();toast('市場快取已清除；自動重建暫停至下次排程');},{discardSettings:false});}}));
-  document.querySelector('#clearAll')?.addEventListener('click',uiAction(async()=>{if(await confirmDestructive({title:'清除全部個人資料？',description:'這會永久刪除目前瀏覽器中的投資與退休規劃資料。',details:['包含交易、退休規劃、試算設定與市場快取。', '此操作無法復原，建議先匯出備份。'],confirmLabel:'永久清除'})){await replaceDataSafely(async()=>{await replaceBrowserData({});settingsStore.replace(createDefaultSettings());budgetPlans=[];budgetItems=[];transactions=[];marketCaches=[];clearUndoHistory();await load();toast('本機個人資料已清除');});}}));
+  document.querySelector('#clearAll')?.addEventListener('click',uiAction(async()=>{if(await confirmDestructive({title:'清除全部個人資料？',description:cloudUser?'這會永久刪除目前登入帳號的投資與退休規劃資料，其他裝置也會受到影響。':'這會永久刪除目前瀏覽器中的投資與退休規劃資料。',details:['包含交易、退休規劃、試算設定與市場快取。', '此操作無法復原，建議先匯出備份。'],confirmLabel:'永久清除'})){await replaceDataSafely(async()=>{await replaceBrowserData({});settingsStore.replace(createDefaultSettings());budgetPlans=[];budgetItems=[];transactions=[];marketCaches=[];clearUndoHistory();await load();toast(cloudUser?'帳號個人資料已清除':'本機個人資料已清除');});}}));
 }
 function filePicker(accept, cb) { const input=document.createElement('input'); input.type='file'; input.accept=accept; input.onchange=()=>input.files[0]&&cb(input.files[0]); input.click(); }
 async function copyAiImportPrompt() {
@@ -1628,7 +1661,7 @@ async function backup(){if(dataMaintenance)return;const saved=await Promise.all(
 async function restore(file) {
   try {
     const data=validateBackupPayload(JSON.parse(await file.text()),BACKUP_SCHEMA_VERSION,Object.keys(ACQUISITIONS));
-    if(!await confirmDestructive({title:'以備份覆蓋目前資料？',description:'目前瀏覽器中的資料會先被清除，再還原備份內容。',details:[`備份含 ${data.transactions.length} 筆交易紀錄。`,'建議先匯出目前資料，以免遺失。'],confirmLabel:'覆蓋並還原'})) return;
+    if(!await confirmDestructive({title:'以備份覆蓋目前資料？',description:cloudUser?'備份會取代目前登入帳號的資料，其他裝置重新載入後也會套用。':'目前瀏覽器中的資料會先被清除，再還原備份內容。',details:[`備份含 ${data.transactions.length} 筆交易紀錄。`,'建議先匯出目前資料，以免遺失。'],confirmLabel:'覆蓋並還原'})) return;
     const restoredSettings=normaliseSettings({ ...data.settings, id:'default', monthlyExpenseTarget:0 }, { asOfMonth:currentYearMonth(), resetMarketSync:true });
     await replaceDataSafely(async()=>{
       await replaceBrowserData({transactions:data.transactions.map(backupTransaction),settings:[restoredSettings],marketCache:[],budgetPlans:data.budgetPlans,budgetItems:data.budgetItems});
@@ -1638,6 +1671,97 @@ async function restore(file) {
     });
   } catch(e) { alert(`無法還原備份：${e.message}`); }
 }
+let cloudSessionStart = null;
+
+async function exportLocalAccountBackup() {
+  const local = await readLocalPersonalData();
+  const savedSettings = normaliseSettings(local.settings[0], { asOfMonth:currentYearMonth(), resetMarketSync:true });
+  download(JSON.stringify({
+    schemaVersion:BACKUP_SCHEMA_VERSION, appVersion:APP_VERSION, exportedAt:new Date().toISOString(),
+    transactions:local.transactions.map(backupTransaction), settings:savedSettings,
+    budgetPlans:local.budgetPlans, budgetItems:local.budgetItems,
+  }, null, 2), `stock-local-backup-${today()}.json`, 'application/json');
+}
+
+function startCloudSession() {
+  if (cloudSessionStart) return cloudSessionStart;
+  cloudSessionStart = (async () => {
+    root.innerHTML = '<section class="cloud-login panel"><h1>存股退休</h1><p role="status" id="loginStatus">正在確認登入狀態…</p><div id="googleSignIn"></div><button type="button" class="secondary" id="localBackup">下載舊本機備份</button><p>登入後，交易與退休規劃會儲存至你的雲端帳號。舊資料不會自動上傳；可先下載備份，再於設定頁匯入。</p><button type="button" class="secondary" id="retryLogin">重新整理</button></section>';
+    document.querySelector('#localBackup')?.addEventListener('click', uiAction(exportLocalAccountBackup, '無法匯出本機資料'));
+    document.querySelector('#retryLogin')?.addEventListener('click', () => location.reload());
+    const status = document.querySelector('#loginStatus');
+    const activate = async user => {
+      cloudUser = user;
+      accountStore = createCloudDataStore({ request:(path, options) => cloudRequest(path, { ...options, accountId:user.id }) });
+      useCloudDataStore(accountStore);
+      await load();
+    };
+    try {
+      try {
+        const session = await cloudRequest('/api/session');
+        await activate(session.user);
+        return;
+      } catch (error) {
+        if (error.status !== 401) throw error;
+      }
+      const config = await cloudRequest('/api/config');
+      await loadGoogleSignIn();
+      status.textContent = '使用 Google 登入，開始管理你的投資與退休規劃。';
+      let loggingIn = false;
+      globalThis.google.accounts.id.initialize({
+        client_id:config.clientId, nonce:config.nonce, auto_select:false,
+        callback:async result => {
+          if (loggingIn) return;
+          loggingIn = true;
+          status.textContent = '正在登入…';
+          try {
+            const session = await cloudRequest('/api/login', { method:'POST', body:{ credential:result.credential } });
+            await activate(session.user);
+          } catch (error) {
+            status.textContent = error.message;
+            status.setAttribute('role', 'alert');
+            loggingIn = false;
+          }
+        },
+      });
+      globalThis.google.accounts.id.renderButton(document.querySelector('#googleSignIn'), { theme:'outline', size:'large', text:'signin_with' });
+    } catch (error) {
+      status.textContent = error.message;
+      status.setAttribute('role', 'alert');
+    }
+  })();
+  return cloudSessionStart;
+}
+
+async function logoutCloudAccount() {
+  if (!cloudUser || dataMaintenance) return;
+  dataMaintenance = true;
+  clearTimeout(marketSyncTimer);
+  try {
+    await marketTask.cancel();
+    await comparisonPage.reset();
+    await loadQueue;
+    const saved = await Promise.all([chartSettingsAutosave.flush(), projectionAutosave.flush()]);
+    if (saved.includes(false)) throw Error('設定尚未儲存，請重試後再登出');
+    await settingsStore.whenIdle();
+    await accountStore.whenIdle();
+    await cloudRequest('/api/logout', { method:'POST', body:{}, accountId:cloudUser.id });
+    overviewTrend.dispose();
+    holdingTrend?.dispose();
+    transactions = [];
+    budgetPlans = [];
+    budgetItems = [];
+    settingsStore.replace(createDefaultSettings());
+    clearUndoHistory();
+    root.innerHTML = '<p role="status">已登出，正在重新載入…</p>';
+    location.reload();
+  } catch (error) {
+    dataMaintenance = false;
+    scheduleMarketSyncCheck();
+    throw error;
+  }
+}
+
 document.addEventListener('visibilitychange',()=>{if(!document.hidden){void maybeAutoSyncMarket();scheduleMarketSyncCheck();}});
 window.addEventListener('online',()=>{marketCalendarRetryAfter=null;void maybeAutoSyncMarket();scheduleMarketSyncCheck();});
 window.addEventListener('hashchange',syncPageFromHash);

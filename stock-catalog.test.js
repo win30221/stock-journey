@@ -2,7 +2,7 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 
 test('stock catalog normalises FinMind rows and removes duplicate symbols', async () => {
-  const { normaliseStockCatalog } = await import('./js/domain/stock-catalog.js');
+  const { normaliseStockCatalog } = await import('./frontend/js/domain/stock-catalog.js');
   const rows = normaliseStockCatalog([
     { stock_id:'2330', stock_name:'台積電', type:'twse' },
     { stock_id:'00878', stock_name:'國泰永續高股息', type:'twse' },
@@ -15,7 +15,7 @@ test('stock catalog normalises FinMind rows and removes duplicate symbols', asyn
 });
 
 test('stock search matches Chinese names and symbols with useful ranking', async () => {
-  const { searchStockCatalog } = await import('./js/domain/stock-catalog.js');
+  const { searchStockCatalog } = await import('./frontend/js/domain/stock-catalog.js');
   const catalog = [
     { symbol:'2330', name:'台積電' },
     { symbol:'2337', name:'旺宏' },
@@ -29,7 +29,7 @@ test('stock search matches Chinese names and symbols with useful ranking', async
 });
 
 test('exact Chinese stock name resolves to the stored stock symbol', async () => {
-  const { resolveStockQuery } = await import('./js/domain/stock-catalog.js');
+  const { resolveStockQuery } = await import('./frontend/js/domain/stock-catalog.js');
   const catalog = [{ symbol:'2330', name:'台積電' },{ symbol:'00878', name:'國泰永續高股息' }];
 
   assert.equal(resolveStockQuery(catalog,' 台積電 ').symbol, '2330');

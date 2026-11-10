@@ -2,7 +2,7 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 
 test('portfolio calculations remain UI-independent', async () => {
-  const { calculateHoldingGroups, calculatePortfolioMetrics, calculateUnrealizedReturn } = await import('../js/domain/portfolio.js');
+  const { calculateHoldingGroups, calculatePortfolioMetrics, calculateUnrealizedReturn } = await import('../frontend/js/domain/portfolio.js');
   const holdings = calculateHoldingGroups([
     { symbol:'0050', acquisitionType:'MANUAL_BUY', quantity:10, price:100, fee:5 },
     { symbol:'0050', acquisitionType:'DIVIDEND_REINVESTMENT', quantity:1, price:110, fee:0 },
@@ -25,7 +25,7 @@ test('portfolio calculations remain UI-independent', async () => {
 });
 
 test('retirement budget calculations accept plain data', async () => {
-  const { calculateBudgetSummary } = await import('../js/domain/retirement.js');
+  const { calculateBudgetSummary } = await import('../frontend/js/domain/retirement.js');
   const summary = calculateBudgetSummary(
     { selectedTarget:'NEEDS_AND_WANTS', bufferRateBps:1000 },
     [
@@ -38,7 +38,7 @@ test('retirement budget calculations accept plain data', async () => {
 });
 
 test('retirement projection accounts for inflation and recommends a monthly contribution', async () => {
-  const { calculateRetirementProjection, futureValue } = await import('../js/domain/retirement.js');
+  const { calculateRetirementProjection, futureValue } = await import('../frontend/js/domain/retirement.js');
   assert.equal(futureValue({ principal:1000000, monthlyContribution:0, annualReturnRate:0, years:10 }), 1000000);
   const projection = calculateRetirementProjection({
     currentAge:40, targetAge:60, currentAssets:3000000, currentMonthlyExpense:50000,
@@ -53,7 +53,7 @@ test('retirement projection accounts for inflation and recommends a monthly cont
 });
 
 test('retirement dates keep expense purchasing power anchored to each item base month', async () => {
-  const { ageAtYearMonth, calculateBudgetSummaryAt, calculateRetirementProjection } = await import('../js/domain/retirement.js');
+  const { ageAtYearMonth, calculateBudgetSummaryAt, calculateRetirementProjection } = await import('../frontend/js/domain/retirement.js');
   assert.equal(ageAtYearMonth('1992-08','2026-09'), 34);
   const item={bucket:'NEED',occurrenceAmount:10000,frequency:'MONTHLY',calculationMode:'RECURRING',amountBaseMonth:'2025-09'};
   const now=calculateBudgetSummaryAt({selectedTarget:'NEEDS_ONLY',bufferRateBps:0},[item],{inflationRate:0.02,asOfMonth:'2026-09'});
@@ -71,7 +71,7 @@ test('retirement dates keep expense purchasing power anchored to each item base 
 });
 
 test('retirement drawdown reports when its sale-rate limit leaves a living-expense shortfall', async () => {
-  const { calculateRetirementProjection } = await import('../js/domain/retirement.js');
+  const { calculateRetirementProjection } = await import('../frontend/js/domain/retirement.js');
   const projection=calculateRetirementProjection({
     currentMonth:'2026-09',birthMonth:'1986-09',targetAge:60,lifeExpectancy:70,currentAssets:1200000,
     currentMonthlyExpense:10000,expenseBaseMonth:'2026-09',otherMonthlyIncome:0,monthlyContribution:0,
@@ -86,7 +86,7 @@ test('retirement drawdown reports when its sale-rate limit leaves a living-expen
 });
 
 test('automatic retirement projection fixes the horizon at 100 and can identify retirement now', async () => {
-  const { calculateRetirementProjection } = await import('../js/domain/retirement.js');
+  const { calculateRetirementProjection } = await import('../frontend/js/domain/retirement.js');
   const projection=calculateRetirementProjection({
     currentMonth:'2026-09',birthMonth:'1986-09',autoRetirementAge:true,currentAssets:13200000,
     currentMonthlyExpense:10000,expenseBaseMonth:'2026-09',otherMonthlyIncome:0,monthlyContribution:0,
@@ -100,7 +100,7 @@ test('automatic retirement projection fixes the horizon at 100 and can identify 
 });
 
 test('retirement uses projected dividends before any portfolio sale', async () => {
-  const { calculateRetirementProjection } = await import('../js/domain/retirement.js');
+  const { calculateRetirementProjection } = await import('../frontend/js/domain/retirement.js');
   const projection=calculateRetirementProjection({
     currentMonth:'2026-09',birthMonth:'1986-09',autoRetirementAge:true,currentAssets:1000000,
     currentMonthlyExpense:2000,expenseBaseMonth:'2026-09',otherMonthlyIncome:0,monthlyContribution:0,
@@ -114,7 +114,7 @@ test('retirement uses projected dividends before any portfolio sale', async () =
 });
 
 test('annual dividend forecast applies current holdings to the latest twelve months of cash dividends', async () => {
-  const { calculateProjectedAnnualDividends } = await import('../js/domain/dividends.js');
+  const { calculateProjectedAnnualDividends } = await import('../frontend/js/domain/dividends.js');
   const forecast=calculateProjectedAnnualDividends({
     asOfDate:'2026-09-04',transactions:[{symbol:'0050',date:'2025-01-02',quantity:100}],
     marketCaches:[{symbol:'0050',dividends:[{exDate:'2026-03-01',cash:2},{exDate:'2025-02-01',cash:1},{exDate:'2024-08-01',cash:9}]}],
@@ -123,7 +123,7 @@ test('annual dividend forecast applies current holdings to the latest twelve mon
 });
 
 test('automatic retirement projection reports no age when assets cannot last to 100', async () => {
-  const { calculateRetirementProjection } = await import('../js/domain/retirement.js');
+  const { calculateRetirementProjection } = await import('../frontend/js/domain/retirement.js');
   const projection=calculateRetirementProjection({
     currentMonth:'2026-09',birthMonth:'1986-09',autoRetirementAge:true,currentAssets:100000,
     currentMonthlyExpense:10000,expenseBaseMonth:'2026-09',otherMonthlyIncome:0,monthlyContribution:0,
@@ -137,7 +137,7 @@ test('automatic retirement projection reports no age when assets cannot last to 
 });
 
 test('market sync planning has no app-state dependency', async () => {
-  const { createMarketSyncPlan } = await import('../js/domain/market.js');
+  const { createMarketSyncPlan } = await import('../frontend/js/domain/market.js');
   const plan = createMarketSyncPlan({ cache:{ prices:[] }, transactionStart:'2026-01-02', target:'2026-08-28' });
   assert.equal(plan.priceNeeded, true);
   assert.equal(plan.priceStart, '2026-01-02');
@@ -145,7 +145,7 @@ test('market sync planning has no app-state dependency', async () => {
 });
 
 test('dividend receipts are derived from explicit inputs', async () => {
-  const { calculateDividendReceipts } = await import('../js/domain/dividends.js');
+  const { calculateDividendReceipts } = await import('../frontend/js/domain/dividends.js');
   const receipts = calculateDividendReceipts({
     transactions:[{ symbol:'0050', date:'2025-01-02', quantity:100 }],
     marketCaches:[{ symbol:'0050', prices:[{ date:'2026-01-09', close:100 }], dividends:[{ exDate:'2026-01-10', paymentDate:'2026-02-01', cash:2 }] }],
@@ -157,7 +157,7 @@ test('dividend receipts are derived from explicit inputs', async () => {
 });
 
 test('stock dividend expectation uses holdings before the ex-dividend event', async () => {
-  const { calculateStockDividendChecks } = await import('../js/domain/dividends.js');
+  const { calculateStockDividendChecks } = await import('../frontend/js/domain/dividends.js');
   const checks = calculateStockDividendChecks(
     [
       { symbol:'0050', date:'2026-01-02', acquisitionType:'MANUAL_BUY', quantity:100 },
@@ -171,7 +171,7 @@ test('stock dividend expectation uses holdings before the ex-dividend event', as
 });
 
 test('hash routes stay stable for static hosting and future Next.js pages', async () => {
-  const { hashForPage, pageFromHash } = await import('../js/app/router.js');
+  const { hashForPage, pageFromHash } = await import('../frontend/js/app/router.js');
   assert.equal(pageFromHash('#transactions'), 'transactions');
   assert.equal(pageFromHash('#market-data'), 'market-data');
   assert.equal(pageFromHash('#retirement-calculator'), 'retirement-calculator');

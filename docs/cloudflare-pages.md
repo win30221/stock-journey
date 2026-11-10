@@ -1,55 +1,112 @@
-# Cloudflare Pages 部署
+# 連線版 Cloudflare 部署
 
-本專案是純靜態網站，不需要 React、Next.js 或資料庫。部署後資料仍保存在瀏覽器，不會新增登入或跨裝置同步。
+本文件適用 `codex/online-platform` 分支。`main` 保留既有本機版本；連線版的 Pages 正式部署分支必須設定為 `codex/online-platform`。目前僅完成程式與本機測試，尚未建立線上資源或更動控制台。
 
-## 連接 GitHub（建議）
+## 目錄與部署邊界
 
-1. 將部署相關變更提交並推送至 `win30221/stock-journey`。
-2. 在 [Cloudflare 控制台](https://dash.cloudflare.com/) 進入 **Workers & Pages → Create application → Pages → Import an existing Git repository**。請選 Pages；既有同名 Worker 不需要刪除。
-3. 連接 GitHub 並選擇 `stock-journey` 儲存庫；需要授權時可只授權此儲存庫。
-4. 填入以下設定：
+- `frontend/`：原生 JavaScript 前端、純計算核心與本機模式。雙擊 `frontend/index.html` 可使用原本的本機儲存。
+- `backend/server/`：Google 憑證驗證、session 與個人資料 API。
+- `backend/migrations/`：D1 SQL 初始化及後續資料庫遷移。
+- `functions/api/[[path]].js`：Pages 必要路由入口，僅轉交 backend；此目錄必須位於 Pages 專案根目錄。
+- `scripts/`、`tests/`、`docs/`：共用建置、測試及文件。
 
-| 欄位 | 值 |
+`node scripts/build-pages.cjs` 產生 `dist/`，並在 HTML 加入 cloud 模式標記。部署版本不會因 API 失敗而改存本機。公開產物仍只有 HTML、CSS、bundle 和公開範例 CSV；後端由 Pages 另外打包，不能將整個 repository 上傳為靜態資源。
+
+## 1. 建立 Google 登入用戶端
+
+1. 在 Google Cloud Console 建立／選擇專案，設定 Google Auth Platform 的 Branding、Audience 與網站資料。
+2. 建立 OAuth 用戶端，類型選「網頁應用程式」。
+3. Authorized JavaScript origins 加入完整正式 origin，例如 `https://stock-journey-online.pages.dev`，之後使用自訂網域也須加入。不要加入 hash 或路徑。
+4. 本版使用 Google Identity Services 的 JavaScript callback，後端驗證 ID token；不需要 OAuth client secret 或 redirect callback URL。
+5. 測試模式下，依 Google 控制台要求加入測試使用者；公開上線前完成相應發布設定。
+6. 複製 Client ID（通常以 `.apps.googleusercontent.com` 結尾）。Client ID 為公開識別值；不把登入憑證存進 localStorage。
+
+## 2. 建立 D1
+
+以下命令都在 repository 根目錄、`codex/online-platform` 分支執行。使用有 Cloudflare 權限的帳號：
+
+```sh
+npx wrangler login
+npx wrangler d1 create stock-journey-online
+```
+
+將建立結果的 `database_id` 填入 `backend/wrangler.d1.jsonc` 的同名欄位，再執行：
+
+```sh
+npx wrangler d1 execute DB --config backend/wrangler.d1.jsonc --remote --file backend/migrations/0001_accounts.sql
+```
+
+第一次 SQL 使用 CREATE IF NOT EXISTS，可重複執行，不會清除既有個人資料。請勿在後續部署時刪除重建資料庫。
+
+## 3. Pages Git 整合
+
+建議為連線版建立獨立 Pages project，例如 `stock-journey-online`，保留原站：
+
+| 設定 | 值 |
 | --- | --- |
-| Project name | `stock-journey`（若不可用，可另取名稱） |
-| Production branch | `main` |
-| Framework preset | `None` |
-| Root directory | 留空，使用儲存庫根目錄 |
+| Repository | `win30221/stock-journey` |
+| Production branch | `codex/online-platform` |
+| Framework preset | None |
+| Root directory | 留空，使用 repository 根目錄 |
 | Build command | `node scripts/build-pages.cjs` |
-| Build output directory | `dist` |
-| Environment variable | `NODE_VERSION` = `24` |
+| Output directory | `dist` |
+| NODE_VERSION | `24` |
 
-5. 按 **Save and Deploy**，完成後開啟控制台提供的 `https://<project-name>.pages.dev` 網址。之後推送 `main` 會自動部署正式版本，其他分支可產生預覽部署。
+在 Pages Settings 的 Variables and Secrets 設定 `GOOGLE_CLIENT_ID`；在 Bindings 新增名為 `DB` 的 D1 binding，指向 `stock-journey-online`。設定完成後重新部署。這兩項都必須對應正式環境，不能只設 Preview。
 
-市場請求仍由瀏覽器直接呼叫 FinMind；不需要 Cloudflare API 金鑰或伺服器環境變數。
+在 Builds 的分支控制中停用其他分支的 Preview 自動部署，或只允許連線版分支。建置腳本另會拒絕 `CF_PAGES_BRANCH` 不是 `codex/online-platform` 的建置。Production branch 是控制台設定，單純建立本機 Git 分支不會自動改變它。
 
-## 手動部署
+若使用手動 CLI 部署，須先確認目前分支，然後在根目錄執行：
+
+```sh
+git switch codex/online-platform
+node scripts/build-pages.cjs
+npx wrangler pages deploy dist --project-name stock-journey-online --branch codex/online-platform
+```
+
+不可使用控制台拖曳純靜態檔案方式部署這個連線版，因為本版需要 Pages Functions。也不要改用 Workers deploy 命令或變更原先獨立 Worker。
+
+## 4. 本機雲端整合開發
+
+本機 HTML 使用本機模式。測試雲端 API 則先建置 dist，使用 Wrangler 的 Pages 開發伺服器與本機 D1；不連正式資料庫：
 
 ```sh
 node scripts/build-pages.cjs
+npx wrangler d1 execute DB --config backend/wrangler.local.jsonc --local --persist-to .wrangler/local-state --file backend/migrations/0001_accounts.sql
+npx wrangler pages dev dist --d1 DB=local-stock-journey --persist-to .wrangler/local-state --binding GOOGLE_CLIENT_ID=你的ClientID --local-protocol https
 ```
 
-只上傳 `dist/`，不要上傳整個儲存庫，以免公開其他個人檔案。產物只含 `index.html`、`styles.css`、`app.bundle.js` 與頁面提供下載的公開範例 `my-stock-transactions.csv`，每次建置會清空重建。根目錄 bundle 不會被此指令修改。請勿將此公開範例替換成自己的真實交易，個人資料應透過網頁匯入並保存在瀏覽器。
+Google origin 設定、瀏覽器對本機 HTTPS 憑證的信任與 Secure Cookie 均須確認；不得為測試正式網域而移除後端 HTTPS 或 Origin 驗證。可先以自動測試驗證後端，正式 Google 登入仍需實際瀏覽器驗收。
 
-不使用 Git 整合時，可在 Pages 選 **Drag and drop your files** 上傳 `dist/`。Direct Upload 專案日後不能直接改成 Git 整合，需要另建專案。
+## 5. 舊資料搬移
 
-已安裝 Wrangler 並完成登入時，也可以執行：
+1. 在原網站／舊本機 HTML 匯出 JSON 備份。不同 origin 的資料無法由新站直接讀取。
+2. 如果使用相同 origin，新登入畫面與登入後設定頁也提供「下載舊本機備份」，只讀取舊本機資料，不會自動上傳或刪除它。
+3. 登入正確 Google 帳號，在設定頁匯入 JSON；確認提示中的帳號資料覆蓋範圍。
+4. 核對交易、退休計畫及設定，重新同步行情。
+5. 換另一個裝置登入相同帳號，核對資料；其他裝置需重新載入才能看到更新。
+
+## 第一版資料契約與限制
+
+- D1 的 `users.id` 使用 Google `sub`，不以 email 作為不可變識別。session token 以 HttpOnly／Secure／SameSite Cookie 傳送，D1 只存 SHA-256 雜湊，七天到期。
+- 登入採同源 JSON POST、Google nonce 及後端簽章／audience／issuer／expiry 驗證。資料 API 另綁定目前頁面帳號，避免另一分頁換帳號後誤寫。
+- `account_data` 每帳號一列，儲存 `transactions`、`settings`、`budgetPlans`、`budgetItems` 的 JSON 快照。每次儲存以 revision 條件更新；整份資料還原／清除為單一 SQL 原子更新。
+- 第一版個人資料上限為 512 KiB；每次個人資料變更會傳送完整快照，適合初期小型帳號。大量交易或頻繁寫入時應再拆成逐筆資料表與 API，不應宣稱此設計適合無限成長。
+- 版本衝突或儲存結果不明時保留輸入，請先另外記下草稿，再重新整理確認；不自動合併，也不自動以新版本重試覆蓋。
+- 行情、股息、分割仍由瀏覽器向 FinMind 取得，市場快取留在裝置；尚未建立共享行情服務或背景排程。行情資料不足提示保留。
+- 本版沒有離線編輯同步、即時跨裝置推播、帳號刪除或強制撤銷所有裝置登入功能。清除個人資料會清除投資快照，不會刪除 Google 帳號或登入身分。
+
+## 驗收
 
 ```sh
+node scripts/build-static.cjs
+node --test
+node scripts/build-static.cjs --check
 node scripts/build-pages.cjs
-npx wrangler pages deploy dist --project-name stock-journey
+npx wrangler pages functions build --outfile .wrangler/cloud-api.js
+git diff --check
 ```
 
-Git 整合的建置命令在控制台設定。專案名稱不同時須修改 CLI 指令。此專案不新增 Wrangler 設定，避免影響同一儲存庫既有的 Workers 部署。
+線上另須驗證 Google 登入／登出、未授權 API、兩帳號隔離、跨裝置新增與衝突、JSON 還原、清除、網路斷線、行動裝置與鍵盤操作。自動測試及 Functions 打包通過，不代表 Google／Cloudflare 控制台已設定或實際瀏覽器驗收已完成。
 
-## 搬移資料與驗收
-
-1. 在原網站或本機 HTML 的設定頁匯出 JSON 備份。
-2. 在正式 Pages 網址的設定頁還原 JSON。不同網域、預覽網址及瀏覽器有各自的 IndexedDB／localStorage，不會自動取得舊資料。
-3. 核對交易、設定與持股，執行市場同步，檢查行情、股息、分割與資料不足提示。
-4. 檢查首頁、交易、股票比較與設定；重新整理 `/#transactions` 確認頁面正常。現有 hash 路由不需要 `_redirects`。
-5. 檢查鍵盤焦點、對話框與行動版，並確認 CSS、腳本與 FinMind 請求沒有載入錯誤。
-
-發布腳本或樣式變更仍須更新 `index.html` 版本參數。沿用 Pages 預設快取。
-
-官方文件：[Static HTML](https://developers.cloudflare.com/pages/framework-guides/deploy-anything/)、[建置設定](https://developers.cloudflare.com/pages/configuration/build-configuration/)、[Direct Upload](https://developers.cloudflare.com/pages/get-started/direct-upload/)、[路由與快取](https://developers.cloudflare.com/pages/configuration/serving-pages/)。
+參考：[Pages Functions](https://developers.cloudflare.com/pages/functions/)、[D1 綁定](https://developers.cloudflare.com/pages/functions/bindings/)、[Google 憑證驗證](https://developers.google.com/identity/gsi/web/guides/verify-google-id-token)。

@@ -11,8 +11,8 @@ test('Pages build publishes fresh runtime assets and removes stale or personal f
   const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'stock-journey-pages-'));
   t.after(() => fs.rmSync(fixture, { recursive: true, force: true }));
 
-  for (const file of [...sourceFiles, 'index.html', 'styles.css', 'my-stock-transactions.csv',
-    'scripts/build-static.cjs', 'scripts/build-pages.cjs']) {
+  for (const file of [...sourceFiles, 'index.html', 'styles.css', 'my-stock-transactions.csv'].map(file => `frontend/${file}`).concat([
+    'scripts/build-static.cjs', 'scripts/build-pages.cjs'])) {
     const target = path.join(fixture, file);
     fs.mkdirSync(path.dirname(target), { recursive: true });
     fs.copyFileSync(path.join(projectRoot, file), target);
@@ -29,8 +29,9 @@ test('Pages build publishes fresh runtime assets and removes stale or personal f
     'app.bundle.js', 'index.html', 'my-stock-transactions.csv', 'styles.css',
   ]);
   assert.equal(fs.readFileSync(path.join(output, 'app.bundle.js'), 'utf8'), buildBundle());
-  for (const file of ['index.html', 'styles.css', 'my-stock-transactions.csv']) {
-    assert.deepEqual(fs.readFileSync(path.join(output, file)), fs.readFileSync(path.join(projectRoot, file)));
+  for (const file of ['styles.css', 'my-stock-transactions.csv']) {
+    assert.deepEqual(fs.readFileSync(path.join(output, file)), fs.readFileSync(path.join(projectRoot, 'frontend', file)));
   }
+  assert.match(fs.readFileSync(path.join(output, 'index.html'), 'utf8'), /name="stock-journey-storage" content="cloud"/);
   assert.equal(fs.readFileSync(path.join(fixture, 'app.bundle.js'), 'utf8'), 'stale bundle');
 });

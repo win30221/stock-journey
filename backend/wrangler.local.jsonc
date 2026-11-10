@@ -1,0 +1,12 @@
+{
+  // Only for local D1 initialization. Production Pages bindings live in its dashboard.
+  "name": "stock-journey-local",
+  "compatibility_date": "2026-11-10",
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "stock-journey-local",
+      "database_id": "local-stock-journey"
+    }
+  ]
+}

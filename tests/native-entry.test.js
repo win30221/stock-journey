@@ -18,6 +18,6 @@ test('native ES module entry boots without private globals supplied by the class
     await new Promise(resolve=>setImmediate(resolve));
     if(!root.innerHTML.includes('class="shell"'))throw Error(root.innerHTML||'No page rendered');
     process.stdout.write(location.hash);
-  `],{cwd:path.resolve(__dirname,'..'),encoding:'utf8'});
+  `],{cwd:path.resolve(__dirname,'../frontend'),encoding:'utf8'});
   assert.equal(output,'#overview');
 });

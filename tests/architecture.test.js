@@ -4,7 +4,7 @@ const path = require('node:path');
 const test = require('node:test');
 const { execFileSync } = require('node:child_process');
 
-const projectRoot = path.resolve(__dirname, '..');
+const projectRoot = path.resolve(__dirname, '../frontend');
 const domainFiles = fs.readdirSync(path.join(projectRoot, 'js/domain'))
   .filter(name => name.endsWith('.js')).map(name => `js/domain/${name}`);
 const portableFiles = [...domainFiles, 'js/app/settings.js', 'js/app/portfolio-model.js', 'js/app/async-state.js'];

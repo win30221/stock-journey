@@ -10,7 +10,7 @@ function deferred() {
 }
 
 test('settings store imports without touching browser services', () => {
-  const moduleUrl = pathToFileURL(require.resolve('../js/app/settings.js')).href;
+  const moduleUrl = pathToFileURL(require.resolve('../frontend/js/app/settings.js')).href;
   execFileSync(process.execPath, ['--input-type=module', '-e', `
     for (const name of ['document', 'localStorage', 'fetch']) {
       Object.defineProperty(globalThis, name, { get() { throw Error('Unexpected access: ' + name); } });
@@ -22,7 +22,7 @@ test('settings store imports without touching browser services', () => {
 });
 
 test('queued settings saves merge with the latest committed snapshot', async () => {
-  const { createSettingsStore } = await import('../js/app/settings.js');
+  const { createSettingsStore } = await import('../frontend/js/app/settings.js');
   const firstWrite = deferred(), writes = [];
   const initial = { left:0, right:0, preserved:'yes' };
   const store = createSettingsStore({
@@ -52,7 +52,7 @@ test('queued settings saves merge with the latest committed snapshot', async () 
 });
 
 test('failed saves reject without publishing and do not block later saves or whenIdle', async () => {
-  const { createSettingsStore } = await import('../js/app/settings.js');
+  const { createSettingsStore } = await import('../frontend/js/app/settings.js');
   let attempts = 0;
   const store = createSettingsStore({
     initialSettings:{ expense:100, contribution:10 },
@@ -72,7 +72,7 @@ test('failed saves reject without publishing and do not block later saves or whe
 });
 
 test('snapshots stay stable between changes and subscriptions can be removed', async () => {
-  const { createSettingsStore } = await import('../js/app/settings.js');
+  const { createSettingsStore } = await import('../frontend/js/app/settings.js');
   let writes = 0;
   const store = createSettingsStore({ initialSettings:{ value:1 }, repository:{ async save() { writes++; } } });
   const original = store.getSnapshot(), notifications = [];
@@ -95,7 +95,7 @@ test('snapshots stay stable between changes and subscriptions can be removed', a
 });
 
 test('separate store instances isolate settings and subscriptions', async () => {
-  const { createSettingsStore } = await import('../js/app/settings.js');
+  const { createSettingsStore } = await import('../frontend/js/app/settings.js');
   const firstWrites = [], secondWrites = [];
   const first = createSettingsStore({ repository:{ async save(value) { firstWrites.push(value); } } });
   const second = createSettingsStore({ repository:{ async save(value) { secondWrites.push(value); } } });
@@ -112,7 +112,7 @@ test('separate store instances isolate settings and subscriptions', async () => 
 });
 
 test('a loading adapter can guard its snapshot with the store revision', async () => {
-  const { createSettingsStore } = await import('../js/app/settings.js');
+  const { createSettingsStore } = await import('../frontend/js/app/settings.js');
   const store = createSettingsStore({ initialSettings:{ annualReturn:6 }, repository:{ async save() {} } });
   const read = deferred();
   await store.whenIdle();
@@ -132,7 +132,7 @@ test('a loading adapter can guard its snapshot with the store revision', async (
 });
 
 test('whenIdle also waits for saves queued by a subscription', async () => {
-  const { createSettingsStore } = await import('../js/app/settings.js');
+  const { createSettingsStore } = await import('../frontend/js/app/settings.js');
   const gate = deferred();
   const store = createSettingsStore({
     initialSettings:{ value:0 },
@@ -151,7 +151,7 @@ test('whenIdle also waits for saves queued by a subscription', async () => {
 });
 
 test('subscriber failures do not misreport a persisted save as failed', async context => {
-  const { createSettingsStore } = await import('../js/app/settings.js');
+  const { createSettingsStore } = await import('../frontend/js/app/settings.js');
   const errors = context.mock.method(console, 'error', () => {});
   const store = createSettingsStore({ repository:{ async save() {} } });
   store.subscribe(() => { throw Error('view failed'); });
@@ -164,7 +164,7 @@ test('subscriber failures do not misreport a persisted save as failed', async co
 });
 
 test('legacy age and withdrawal settings migrate without inventing a confirmed birth month', async () => {
-  const { normaliseSettings } = await import('../js/app/settings.js');
+  const { normaliseSettings } = await import('../frontend/js/app/settings.js');
   const legacy = normaliseSettings({ retirementCurrentAge:40, retirementWithdrawalRate:4, customNote:'keep' }, { asOfMonth:'2026-09' });
   assert.equal(legacy.retirementBirthMonth, '1986-09');
   assert.equal(legacy.retirementBirthMonthConfirmed, false);
@@ -178,7 +178,7 @@ test('legacy age and withdrawal settings migrate without inventing a confirmed b
 });
 
 test('confirmed birth months and current withdrawal settings survive normalisation', async () => {
-  const { normaliseSettings } = await import('../js/app/settings.js');
+  const { normaliseSettings } = await import('../frontend/js/app/settings.js');
   const source = {
     retirementBirthMonth:'1986-10', retirementBirthMonthConfirmed:true, retirementCurrentAge:20,
     retirementWithdrawalRate:4, retirementSaleWithdrawalRateVersion:1,
@@ -199,7 +199,7 @@ test('normalisation applies established bounds and resets only requested market 
   const {
     normaliseSettings, normaliseGainMilestoneInterval, normaliseTrendTooltipEventLimit,
     normaliseTrendEventMarkerSettings, normaliseProjectionSetting,
-  } = await import('../js/app/settings.js');
+  } = await import('../frontend/js/app/settings.js');
   assert.equal(normaliseGainMilestoneInterval(1), 10000);
   assert.equal(normaliseGainMilestoneInterval(100000001), 100000000);
   assert.equal(normaliseGainMilestoneInterval(undefined), 1000000);
@@ -225,7 +225,7 @@ test('normalisation applies established bounds and resets only requested market 
 });
 
 test('normalisation requires an explicit valid month instead of consulting the system clock', async () => {
-  const { normaliseSettings } = await import('../js/app/settings.js');
+  const { normaliseSettings } = await import('../frontend/js/app/settings.js');
   assert.throws(() => normaliseSettings({}), /asOfMonth/);
   assert.throws(() => normaliseSettings({}, { asOfMonth:'2026-13' }), /asOfMonth/);
 });

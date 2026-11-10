@@ -1,0 +1,13 @@
+{
+  // Replace with the ID returned by `wrangler d1 create stock-journey-online`.
+  // This config is for D1 commands only; Pages deploys from the repository root.
+  "name": "stock-journey-online-data",
+  "compatibility_date": "2026-11-10",
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "stock-journey-online",
+      "database_id": "REPLACE_WITH_CLOUDFLARE_DATABASE_ID"
+    }
+  ]
+}

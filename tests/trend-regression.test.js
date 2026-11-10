@@ -64,7 +64,7 @@ test('overview sync refreshes the chart while preserving birth-month draft and f
 });
 
 test('trend history keeps transactions and payouts within the as-of date and aggregates monthly totals',async()=>{
-  const {calculateTrendHistory,aggregateTrendMonths}=await import('../js/domain/trend.js');
+  const {calculateTrendHistory,aggregateTrendMonths}=await import('../frontend/js/domain/trend.js');
   const txs=[{date:'2026-01-02',symbol:'0050',quantity:10,price:100,fee:0,acquisitionType:'MANUAL_BUY'},{date:'2026-01-09',symbol:'0050',quantity:2,price:110,fee:0,acquisitionType:'RECURRING_INVESTMENT'}];
   const rows=calculateTrendHistory({transactions:txs,marketCaches:[{symbol:'0050',prices:[{date:'2026-01-02',close:100},{date:'2026-01-09',close:110}],dividends:[{exDate:'2026-01-10',paymentDate:'2026-02-01',cash:1}]}],dateBasis:'PAYMENT_DATE',asOfDate:'2026-01-15'});
   assert.equal(rows.at(-1).date,'2026-01-09');assert.equal(rows.at(-1).market,1320);

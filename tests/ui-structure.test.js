@@ -5,7 +5,7 @@ const test = require('node:test');
 const vm = require('node:vm');
 
 test('settings and transaction actions avoid legacy string slicing and duplicate IDs', () => {
-  const source = fs.readFileSync(path.resolve(__dirname, '..', 'app.js'), 'utf8');
+  const source = fs.readFileSync(path.resolve(__dirname, '../frontend', 'app.js'), 'utf8');
   assert.match(source, /function chartSettingsPanel\(\)/);
   assert.doesNotMatch(source, /baseSettingsPage|groupedSettingsPage|legacy\.slice/);
   assert.doesNotMatch(source, /id="(?:transactionImport|addTransaction)"/);
@@ -15,9 +15,9 @@ test('settings and transaction actions avoid legacy string slicing and duplicate
 });
 
 test('manual transaction stock field supports accessible Chinese autocomplete', () => {
-  const source = fs.readFileSync(path.resolve(__dirname, '..', 'app.js'), 'utf8');
-  const searchSource = fs.readFileSync(path.resolve(__dirname, '..', 'js/app/stock-search.js'), 'utf8');
-  const styles = fs.readFileSync(path.resolve(__dirname, '..', 'styles.css'), 'utf8');
+  const source = fs.readFileSync(path.resolve(__dirname, '../frontend', 'app.js'), 'utf8');
+  const searchSource = fs.readFileSync(path.resolve(__dirname, '../frontend', 'js/app/stock-search.js'), 'utf8');
+  const styles = fs.readFileSync(path.resolve(__dirname, '../frontend', 'styles.css'), 'utf8');
 
   assert.match(source, /股票代號或名稱/);
   assert.match(source, /id="transactionSymbol"[^>]+placeholder="例如：0050 或 元大台灣50"[^>]+value="\$\{escapeHtml\(transaction\?\.symbol\|\|''\)\}"/, 'stock symbol should stay empty and show both a symbol and Chinese name as hints');
@@ -34,7 +34,7 @@ test('manual transaction stock field supports accessible Chinese autocomplete', 
 });
 
 test('modal content scrolls through its full height on desktop and mobile', () => {
-  const styles = fs.readFileSync(path.resolve(__dirname, '..', 'styles.css'), 'utf8');
+  const styles = fs.readFileSync(path.resolve(__dirname, '../frontend', 'styles.css'), 'utf8');
   const backdropRule = styles.match(/\.modal-backdrop\s*\{([^}]+)\}/)?.[1] || '';
   const transactionModalRule = styles.match(/\.transaction-modal\s*\{([^}]+)\}/)?.[1] || '';
   const importModalRule = styles.match(/\.ai-import-modal\s*\{([^}]+)\}/)?.[1] || '';
@@ -50,7 +50,7 @@ test('modal content scrolls through its full height on desktop and mobile', () =
 });
 
 test('transaction holdings show unrealized amount together with return percentage', () => {
-  const source = fs.readFileSync(path.resolve(__dirname, '..', 'app.js'), 'utf8');
+  const source = fs.readFileSync(path.resolve(__dirname, '../frontend', 'app.js'), 'utf8');
 
   assert.match(source, /<small>未實現損益<\/small>/);
   assert.match(source, /fmtSignedMoney\(unrealized\.amount\)/);
@@ -61,8 +61,8 @@ test('transaction holdings show unrealized amount together with return percentag
 });
 
 test('transaction summaries stay responsive without clipping the disclosure control', () => {
-  const source = fs.readFileSync(path.resolve(__dirname, '..', 'app.js'), 'utf8');
-  const styles = fs.readFileSync(path.resolve(__dirname, '..', 'styles.css'), 'utf8');
+  const source = fs.readFileSync(path.resolve(__dirname, '../frontend', 'app.js'), 'utf8');
+  const styles = fs.readFileSync(path.resolve(__dirname, '../frontend', 'styles.css'), 'utf8');
 
   assert.match(source, /class="group-metric group-cost"[\s\S]*?平均 \$\{fmtAverageCost\(group\.averageCost\)\}/);
   assert.match(styles, /@media \(max-width: 1050px\) and \(min-width: 801px\)[\s\S]*?\.group-count\s*\{[^}]*grid-column:\s*4;[^}]*grid-row:\s*1;/);
@@ -71,7 +71,7 @@ test('transaction summaries stay responsive without clipping the disclosure cont
 });
 
 test('transaction table aligns financial values and keeps actions visible', () => {
-  const styles = fs.readFileSync(path.resolve(__dirname, '..', 'styles.css'), 'utf8');
+  const styles = fs.readFileSync(path.resolve(__dirname, '../frontend', 'styles.css'), 'utf8');
 
   assert.match(styles, /\.transaction-group table\s*\{[^}]*font-variant-numeric:\s*tabular-nums/);
   assert.match(styles, /\.transaction-group th:nth-child\(n\+3\):nth-child\(-n\+7\), \.transaction-group td:nth-child\(n\+3\):nth-child\(-n\+7\)\s*\{[^}]*text-align:\s*right/);
@@ -79,8 +79,8 @@ test('transaction table aligns financial values and keeps actions visible', () =
 });
 
 test('manual transaction form previews total cost while typing', () => {
-  const source = fs.readFileSync(path.resolve(__dirname, '..', 'app.js'), 'utf8');
-  const styles = fs.readFileSync(path.resolve(__dirname, '..', 'styles.css'), 'utf8');
+  const source = fs.readFileSync(path.resolve(__dirname, '../frontend', 'app.js'), 'utf8');
+  const styles = fs.readFileSync(path.resolve(__dirname, '../frontend', 'styles.css'), 'utf8');
 
   assert.match(source, /class="transaction-cost-preview" role="status" aria-live="polite" aria-atomic="true"/);
   assert.match(source, /function updateTransactionCostPreview\(\)/);
@@ -92,8 +92,8 @@ test('manual transaction form previews total cost while typing', () => {
 });
 
 test('dividend year control matches the app filter and button hierarchy', () => {
-  const source = fs.readFileSync(path.resolve(__dirname, '..', 'app.js'), 'utf8');
-  const styles = fs.readFileSync(path.resolve(__dirname, '..', 'styles.css'), 'utf8');
+  const source = fs.readFileSync(path.resolve(__dirname, '../frontend', 'app.js'), 'utf8');
+  const styles = fs.readFileSync(path.resolve(__dirname, '../frontend', 'styles.css'), 'utf8');
 
   assert.match(source, /class="dividend-year-picker"[^>]*>[\s\S]*?<span>顯示年度<\/span>[\s\S]*?id="dividendYear"/);
   assert.match(source, /class="secondary" data-page="settings">調整計算方式<\/button>/);
@@ -101,7 +101,7 @@ test('dividend year control matches the app filter and button hierarchy', () => 
 });
 
 test('chart event markers stay above the generic blue focus dot', () => {
-  const styles = fs.readFileSync(path.resolve(__dirname, '..', 'styles.css'), 'utf8');
+  const styles = fs.readFileSync(path.resolve(__dirname, '../frontend', 'styles.css'), 'utf8');
   const focusLayer = styles.match(/\.trend-focus-dot\s*\{[^}]*z-index:\s*(\d+)/)?.[1];
   const markerLayer = styles.match(/\.trend-event-marker\s*\{[^}]*z-index:\s*(\d+)/)?.[1];
 
@@ -111,7 +111,7 @@ test('chart event markers stay above the generic blue focus dot', () => {
 });
 
 test('navigation uses a complete selected surface without edge indicators', () => {
-  const styles = fs.readFileSync(path.resolve(__dirname, '..', 'styles.css'), 'utf8');
+  const styles = fs.readFileSync(path.resolve(__dirname, '../frontend', 'styles.css'), 'utf8');
   const desktopActiveRule = styles.match(/^nav button\.active\s*\{([^}]+)\}/m)?.[1] || '';
   const mobileStyles = styles.match(/@media \(max-width: 800px\) \{([\s\S]*?)\n\}/)?.[1] || '';
   const activeRule = mobileStyles.match(/nav button\.active\s*\{([^}]+)\}/)?.[1] || '';
@@ -124,7 +124,7 @@ test('navigation uses a complete selected surface without edge indicators', () =
 });
 
 test('page navigation moves to the top without focus-induced scrolling', () => {
-  const source = fs.readFileSync(path.resolve(__dirname, '..', 'app.js'), 'utf8');
+  const source = fs.readFileSync(path.resolve(__dirname, '../frontend', 'app.js'), 'utf8');
   const transition = source.match(/function renderPageAtTop\(\) \{([\s\S]*?)\n\}/)?.[1] || '';
 
   assert.ok(transition.indexOf('scrollTo?.(0, 0)') < transition.indexOf('render()'));
@@ -134,7 +134,7 @@ test('page navigation moves to the top without focus-induced scrolling', () => {
 });
 
 test('mobile navigation remains visible while the page scrolls', () => {
-  const styles = fs.readFileSync(path.resolve(__dirname, '..', 'styles.css'), 'utf8');
+  const styles = fs.readFileSync(path.resolve(__dirname, '../frontend', 'styles.css'), 'utf8');
   const mobileStyles = styles.match(/@media \(max-width: 800px\) \{([\s\S]*?)\n\}/)?.[1] || '';
   const asideRule = mobileStyles.match(/aside\s*\{([^}]+)\}/)?.[1] || '';
 
@@ -144,8 +144,8 @@ test('mobile navigation remains visible while the page scrolls', () => {
 });
 
 test('mobile navigation opens as an accessible side drawer', () => {
-  const source = fs.readFileSync(path.resolve(__dirname, '..', 'app.js'), 'utf8');
-  const styles = fs.readFileSync(path.resolve(__dirname, '..', 'styles.css'), 'utf8');
+  const source = fs.readFileSync(path.resolve(__dirname, '../frontend', 'app.js'), 'utf8');
+  const styles = fs.readFileSync(path.resolve(__dirname, '../frontend', 'styles.css'), 'utf8');
 
   assert.match(source, /class="mobile-menu-toggle"[^>]+aria-label="開啟菜單"[^>]+aria-controls="mobileNavigationPanel"[^>]+aria-expanded="false"/);
   assert.doesNotMatch(source, /class="mobile-menu-toggle"[^>]*>[\s\S]*?<span>菜單<\/span>/);
@@ -157,7 +157,7 @@ test('mobile navigation opens as an accessible side drawer', () => {
 });
 
 test('chart labels stay readable above markers while the active tooltip stays foremost', () => {
-  const styles = fs.readFileSync(path.resolve(__dirname, '..', 'styles.css'), 'utf8');
+  const styles = fs.readFileSync(path.resolve(__dirname, '../frontend', 'styles.css'), 'utf8');
   const markerLayer = styles.match(/\.trend-event-marker\s*\{[^}]*z-index:\s*(\d+)/)?.[1];
   const labelLayer = styles.match(/\.trend-milestone-label\s*\{[^}]*z-index:\s*(\d+)/)?.[1];
   const tooltipLayer = styles.match(/\.trend-tooltip\s*\{[^}]*z-index:\s*(\d+)/)?.[1];
@@ -170,8 +170,8 @@ test('chart labels stay readable above markers while the active tooltip stays fo
 });
 
 test('gold chart markers follow the selected data point and keyboard focus', () => {
-  const styles = fs.readFileSync(path.resolve(__dirname, '..', 'styles.css'), 'utf8');
-  const source = fs.readFileSync(path.resolve(__dirname, '..', 'js/components/asset-trend-chart.js'), 'utf8');
+  const styles = fs.readFileSync(path.resolve(__dirname, '../frontend', 'styles.css'), 'utf8');
+  const source = fs.readFileSync(path.resolve(__dirname, '../frontend', 'js/components/asset-trend-chart.js'), 'utf8');
   const goldInteractionRule = styles.match(/\.trend-event-marker\.new-stock\.is-active \.trend-event-dot,[^{]+\{([^}]+)\}/)?.[1];
 
   assert.ok(goldInteractionRule, 'gold markers should define selected-point and focus-visible feedback');
@@ -182,7 +182,7 @@ test('gold chart markers follow the selected data point and keyboard focus', () 
 });
 
 test('silver gain milestone grows with the selected data point and keyboard focus', () => {
-  const styles = fs.readFileSync(path.resolve(__dirname, '..', 'styles.css'), 'utf8');
+  const styles = fs.readFileSync(path.resolve(__dirname, '../frontend', 'styles.css'), 'utf8');
   const silverInteractionRule = styles.match(/\.trend-event-marker\.milestone-gain\.is-active \.trend-event-dot,[^{]+\{([^}]+)\}/)?.[1];
 
   assert.ok(silverInteractionRule, 'silver milestones should define selected-point and focus-visible feedback');
@@ -191,8 +191,8 @@ test('silver gain milestone grows with the selected data point and keyboard focu
 });
 
 test('mobile asset chart keeps labels readable and details below the plot', () => {
-  const source = fs.readFileSync(path.resolve(__dirname, '..', 'js/components/asset-trend-chart.js'), 'utf8');
-  const styles = fs.readFileSync(path.resolve(__dirname, '..', 'styles.css'), 'utf8');
+  const source = fs.readFileSync(path.resolve(__dirname, '../frontend', 'js/components/asset-trend-chart.js'), 'utf8');
+  const styles = fs.readFileSync(path.resolve(__dirname, '../frontend', 'styles.css'), 'utf8');
   const mobileStyles = styles.match(/@media \(max-width: 520px\) \{([\s\S]*?)\n\}/)?.[1] || '';
 
   assert.match(source, /trendChartMetrics[\s\S]*?left:82/);
@@ -212,7 +212,7 @@ test('mobile asset chart keeps labels readable and details below the plot', () =
 });
 
 test('mobile milestone labels prioritize both categories and one spaced history point', () => {
-  const source = fs.readFileSync(path.resolve(__dirname, '..', 'js/components/asset-trend-chart.js'), 'utf8');
+  const source = fs.readFileSync(path.resolve(__dirname, '../frontend', 'js/components/asset-trend-chart.js'), 'utf8');
   const functionSource = source.match(/function compactMilestoneLabels[^\n]+/)?.[0];
   const sandbox = { visibleTrendMilestones:milestones => milestones || [] };
   const points = Array.from({length:12},() => ({milestones:[]}));
@@ -227,7 +227,7 @@ test('mobile milestone labels prioritize both categories and one spaced history 
 });
 
 test('mobile navigator reserves its center for moving the selected range', () => {
-  const source = fs.readFileSync(path.resolve(__dirname, '..', 'js/components/asset-trend-chart.js'), 'utf8');
+  const source = fs.readFileSync(path.resolve(__dirname, '../frontend', 'js/components/asset-trend-chart.js'), 'utf8');
   const functionSource = source.match(/function trendNavigatorDragMode[^\n]+/)?.[0];
   const sandbox = { isCompactTrendChart:() => true };
   vm.runInNewContext(`${functionSource}; result = [
@@ -240,7 +240,7 @@ test('mobile navigator reserves its center for moving the selected range', () =>
 });
 
 test('onboarding state accurately derives progress and completion from items and transactions', () => {
-  const source = fs.readFileSync(path.resolve(__dirname, '..', 'app.js'), 'utf8');
+  const source = fs.readFileSync(path.resolve(__dirname, '../frontend', 'app.js'), 'utf8');
   const functionSource = source.match(/function getOnboardingState\([\s\S]*?\n\}/)?.[0];
   assert.ok(functionSource, 'getOnboardingState function must exist in app.js');
 
@@ -288,8 +288,8 @@ test('onboarding state accurately derives progress and completion from items and
 });
 
 test('navigation renders actionable step badges during onboarding and hides them when complete', () => {
-  const source = fs.readFileSync(path.resolve(__dirname, '..', 'app.js'), 'utf8');
-  const styles = fs.readFileSync(path.resolve(__dirname, '..', 'styles.css'), 'utf8');
+  const source = fs.readFileSync(path.resolve(__dirname, '../frontend', 'app.js'), 'utf8');
+  const styles = fs.readFileSync(path.resolve(__dirname, '../frontend', 'styles.css'), 'utf8');
 
   assert.match(source, /function navBadge\(/, 'navBadge helper should exist');
   assert.match(source, /nav-badge/, 'nav markup should include nav-badge');
@@ -319,8 +319,8 @@ test('navigation renders actionable step badges during onboarding and hides them
 });
 
 test('overview renders comprehensive journey progress card with dual task steps', () => {
-  const source = fs.readFileSync(path.resolve(__dirname, '..', 'app.js'), 'utf8');
-  const styles = fs.readFileSync(path.resolve(__dirname, '..', 'styles.css'), 'utf8');
+  const source = fs.readFileSync(path.resolve(__dirname, '../frontend', 'app.js'), 'utf8');
+  const styles = fs.readFileSync(path.resolve(__dirname, '../frontend', 'styles.css'), 'utf8');
 
   assert.match(source, /function overviewJourneyCard\(/);
   assert.match(source, /overviewJourneyCard\(/);
@@ -352,8 +352,8 @@ test('overview renders comprehensive journey progress card with dual task steps'
 });
 
 test('overview adds a retirement projection summary without removing the detailed calculator', () => {
-  const source = fs.readFileSync(path.resolve(__dirname, '..', 'app.js'), 'utf8');
-  const styles = fs.readFileSync(path.resolve(__dirname, '..', 'styles.css'), 'utf8');
+  const source = fs.readFileSync(path.resolve(__dirname, '../frontend', 'app.js'), 'utf8');
+  const styles = fs.readFileSync(path.resolve(__dirname, '../frontend', 'styles.css'), 'utf8');
 
   assert.match(source, /function overviewRetirementSnapshot\(\)/);
   assert.match(source, /calculateRetirementProjection\(projectionInput\(\)\)/);
@@ -372,9 +372,9 @@ test('overview adds a retirement projection summary without removing the detaile
 });
 
 test('retirement results require an explicitly confirmed birth month at the moment of value', () => {
-  const source = fs.readFileSync(path.resolve(__dirname, '..', 'app.js'), 'utf8');
-  const settingsSource = fs.readFileSync(path.resolve(__dirname, '..', 'js/app/settings.js'), 'utf8');
-  const styles = fs.readFileSync(path.resolve(__dirname, '..', 'styles.css'), 'utf8');
+  const source = fs.readFileSync(path.resolve(__dirname, '../frontend', 'app.js'), 'utf8');
+  const settingsSource = fs.readFileSync(path.resolve(__dirname, '../frontend', 'js/app/settings.js'), 'utf8');
+  const styles = fs.readFileSync(path.resolve(__dirname, '../frontend', 'styles.css'), 'utf8');
 
   assert.match(settingsSource, /retirementBirthMonthConfirmed:\s*false/);
   assert.match(source, /function retirementBirthMonthIsConfirmed\(\)/);
@@ -393,8 +393,8 @@ test('retirement results require an explicitly confirmed birth month at the mome
 });
 
 test('budget and transaction pages render contextual step banners during onboarding', () => {
-  const source = fs.readFileSync(path.resolve(__dirname, '..', 'app.js'), 'utf8');
-  const styles = fs.readFileSync(path.resolve(__dirname, '..', 'styles.css'), 'utf8');
+  const source = fs.readFileSync(path.resolve(__dirname, '../frontend', 'app.js'), 'utf8');
+  const styles = fs.readFileSync(path.resolve(__dirname, '../frontend', 'styles.css'), 'utf8');
 
   assert.match(source, /function contextualStepBanner\(/);
   assert.match(source, /contextualStepBanner\('budget'/);
@@ -430,7 +430,7 @@ test('budget and transaction pages render contextual step banners during onboard
 });
 
 test('completion notice survives incidental rerenders and clears on navigation', () => {
-  const source = fs.readFileSync(path.resolve(__dirname, '..', 'app.js'), 'utf8');
+  const source = fs.readFileSync(path.resolve(__dirname, '../frontend', 'app.js'), 'utf8');
   assert.match(source, /announceOnboardingCompletion\s*&&\s*!wasOnboardingComplete\s*&&\s*getOnboardingState\(\)\.isComplete/);
   assert.match(source, /if\s*\(onboardingCompletedNow\)\s*onboardingCompletionNoticeVisible\s*=\s*true;/);
   assert.match(source, /function navigateToPage\([\s\S]*?onboardingCompletionNoticeVisible\s*=\s*false;/);
@@ -442,28 +442,28 @@ test('completion notice survives incidental rerenders and clears on navigation',
 });
 
 test('onboarding navigation does not open an unrelated blank budget editor', () => {
-  const source = fs.readFileSync(path.resolve(__dirname, '..', 'app.js'), 'utf8');
+  const source = fs.readFileSync(path.resolve(__dirname, '../frontend', 'app.js'), 'utf8');
   const handler = source.match(/document\.querySelectorAll\('\[data-onboarding-action\]'\)[\s\S]*?\n  \}\)\);/)?.[0];
   assert.ok(handler, 'onboarding action handler should be extractable');
   assert.doesNotMatch(handler, /startBudgetItem/, 'journey navigation should not auto-open the new-item editor');
 });
 
 test('mobile transaction actions use a two-row hierarchy without narrow equal-width buttons', () => {
-  const styles = fs.readFileSync(path.resolve(__dirname, '..', 'styles.css'), 'utf8');
+  const styles = fs.readFileSync(path.resolve(__dirname, '../frontend', 'styles.css'), 'utf8');
   assert.match(styles, /\.transaction-page-actions\s*\{[^}]*display:\s*grid;[^}]*grid-template-columns:\s*repeat\(2,/s);
   assert.match(styles, /\.transaction-page-actions \.primary\s*\{[^}]*grid-column:\s*1 \/ -1;/s);
 });
 
 test('styles.css has balanced braces without unclosed selectors', () => {
-  const styles = fs.readFileSync(path.resolve(__dirname, '..', 'styles.css'), 'utf8');
+  const styles = fs.readFileSync(path.resolve(__dirname, '../frontend', 'styles.css'), 'utf8');
   const openCount = (styles.match(/\{/g) || []).length;
   const closeCount = (styles.match(/\}/g) || []).length;
   assert.equal(openCount, closeCount, 'number of opening braces must match closing braces in styles.css');
 });
 
 test('retirement calculator connects portfolio, budget, projection assumptions and accessible results', () => {
-  const source = fs.readFileSync(path.resolve(__dirname, '..', 'app.js'), 'utf8');
-  const styles = fs.readFileSync(path.resolve(__dirname, '..', 'styles.css'), 'utf8');
+  const source = fs.readFileSync(path.resolve(__dirname, '../frontend', 'app.js'), 'utf8');
+  const styles = fs.readFileSync(path.resolve(__dirname, '../frontend', 'styles.css'), 'utf8');
   assert.match(source, /'retirement-calculator': '退休試算'/);
   assert.match(source, /function retirementCalculatorPage\(/);
   assert.match(source, /currentAssets:m\.market/);
@@ -520,20 +520,20 @@ test('retirement calculator connects portfolio, budget, projection assumptions a
 });
 
 test('navigation keeps the two primary input pages together before retirement analysis', () => {
-  const source = fs.readFileSync(path.resolve(__dirname, '..', 'app.js'), 'utf8');
+  const source = fs.readFileSync(path.resolve(__dirname, '../frontend', 'app.js'), 'utf8');
   const labels = source.slice(source.indexOf('const PAGE_LABELS'), source.indexOf('async function load'));
   assert.match(labels, /budget: '退休生活預算',[\s\S]*transactions: '持股與交易',[\s\S]*'retirement-calculator': '退休試算'/);
 });
 
 test('retirement budget items expose an explicit price basis month', () => {
-  const source = fs.readFileSync(path.resolve(__dirname, '..', 'app.js'), 'utf8');
+  const source = fs.readFileSync(path.resolve(__dirname, '../frontend', 'app.js'), 'utf8');
   assert.match(source, /name="amountBaseMonth" type="month"/);
   assert.match(source, /金額基準月/);
   assert.match(source, /pricingChanged/);
 });
 
 test('custom budget buffer keeps displaying preset-equivalent values', () => {
-  const source = fs.readFileSync(path.resolve(__dirname, '..', 'app.js'), 'utf8');
+  const source = fs.readFileSync(path.resolve(__dirname, '../frontend', 'app.js'), 'utf8');
   const panel = source.slice(source.indexOf('function budgetGoalSettingsPanel'), source.indexOf('function budgetEditor'));
   assert.match(panel, /id="customBufferRate"[^>]*value="\$\{bufferRate\}"/);
   assert.doesNotMatch(panel, /includes\(bufferRate\).*bufferRate\s*:\s*''/);

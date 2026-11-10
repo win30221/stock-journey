@@ -5,8 +5,8 @@ const test = require('node:test');
 const vm = require('node:vm');
 
 test('generated bundle renders when the page uses file protocol', async () => {
-  const source = fs.readFileSync(path.resolve(__dirname, '..', 'app.bundle.js'), 'utf8');
-  const index = fs.readFileSync(path.resolve(__dirname, '..', 'index.html'), 'utf8');
+  const source = fs.readFileSync(path.resolve(__dirname, '../frontend', 'app.bundle.js'), 'utf8');
+  const index = fs.readFileSync(path.resolve(__dirname, '../frontend', 'index.html'), 'utf8');
   assert.match(index, /<script src="\.\/app\.bundle\.js(?:\?[^"\s]+)?"><\/script>/);
   assert.doesNotMatch(index, /type="module"/);
   assert.doesNotMatch(source, /^import |^export /m);

@@ -1,10 +1,10 @@
 # 開發與 Next.js 遷移指南
 
-本指南供維護者與 AI agent 共用。閱讀順序為根目錄 `AGENTS.md` → 本文件 → 目標模組及相關測試。更新日期：2026-09-08。
+本指南供維護者與 AI agent 共用。連線版最新資料契約與部署方式見 [Cloudflare 部署指南](cloudflare-pages.md)。閱讀順序為根目錄 `AGENTS.md` → 本文件 → 目標模組及相關測試。更新日期：2026-11-10。
 
 ## 現在的架構
 
-本專案仍是原生 JavaScript 靜態網頁，沒有 React／Next.js 執行環境。使用者開啟 `index.html`，載入由來源模組產生的 `app.bundle.js`；資料透過瀏覽器 repository 存在 IndexedDB 或本機儲存。
+本分支 codex/online-platform 是 Google 登入與 D1 連線版，前端仍是原生 JavaScript，沒有 React／Next.js 執行環境。Pages 發布版先確認 session，再注入雲端 repository；本機 HTML 保留本機模式。使用者開啟 `frontend/index.html`，載入由來源模組產生的 `frontend/app.bundle.js`；資料透過瀏覽器 repository 存在 IndexedDB 或本機儲存。
 
 ```mermaid
 flowchart TD
@@ -12,25 +12,27 @@ flowchart TD
   Entry --> Settings[settings：正規化與設定 store]
   Entry --> Tasks[async-state：取消與自動儲存]
   Entry --> UI[components / stock-search：瀏覽器互動]
-  Entry --> Repositories[repositories/browser：本機資料]
+  Entry --> Repositories[repositories/browser：本機或雲端介面]
+  Repositories --> Cloud[repositories/cloud：帳號快照與 revision]
+  Cloud --> Backend[backend/server：session、驗證與 D1]
   Entry --> API[services/finmind：市場 API]
   Model --> Domain[domain：計算與驗證]
   Entry -. 注入 repository .-> Settings
 ```
 
-目錄名稱不是執行環境的保證：`js/app/settings.js` 可在沒有 DOM 的環境匯入；同目錄的 `stock-search.js` 則包含瀏覽器互動。依實際依賴區分。
+目錄名稱不是執行環境的保證：`frontend/js/app/settings.js` 可在沒有 DOM 的環境匯入；同目錄的 `stock-search.js` 則包含瀏覽器互動。依實際依賴區分。
 
 | 位置 | 責任 | 未來遷移方式 |
 | --- | --- | --- |
-| `js/domain/` | 持股、配息、退休、趨勢、匯入驗證 | 保留計算與測試，視需要補 TypeScript 型別 |
-| `js/app/portfolio-model.js` | 組合持股、價格、股息、資產及預測 | React 頁面或伺服器直接呼叫 |
-| `js/app/settings.js` | 預設設定、相容舊資料、序列化寫入與訂閱 | 每個客戶端 Provider 建立 store，注入資料介面 |
-| `js/app/async-state.js` | 可取消工作與延遲儲存 | 保留控制邏輯，接上 React 的建立與清理生命週期 |
-| `js/repositories/browser.js` | 現有瀏覽器資料存取 | 初期沿用；雲端化時新增有相同契約的介面 |
-| `js/services/finmind.js` | 市場請求、逾時與取消 | 決定留在客戶端或由伺服器代理，保留錯誤語意 |
-| `app.js`、`js/components/`、`js/app/stock-search.js` | HTML、DOM、路由與 UI 狀態 | 按功能改寫成 React 元件／hooks |
-| `styles.css` | 目前樣式與設計 token | 先保留視覺結果，再按元件範圍整理 |
-| `scripts/build-static.cjs`、`app.bundle.js` | 支援本機 HTML 的建置 | 正式切換交付方式後交由 Next.js 建置取代 |
+| `frontend/js/domain/` | 持股、配息、退休、趨勢、匯入驗證 | 保留計算與測試，視需要補 TypeScript 型別 |
+| `frontend/js/app/portfolio-model.js` | 組合持股、價格、股息、資產及預測 | React 頁面或伺服器直接呼叫 |
+| `frontend/js/app/settings.js` | 預設設定、相容舊資料、序列化寫入與訂閱 | 每個客戶端 Provider 建立 store，注入資料介面 |
+| `frontend/js/app/async-state.js` | 可取消工作與延遲儲存 | 保留控制邏輯，接上 React 的建立與清理生命週期 |
+| `frontend/js/repositories/browser.js` | 現有瀏覽器資料存取 | 初期沿用；雲端化時新增有相同契約的介面 |
+| `frontend/js/services/finmind.js` | 市場請求、逾時與取消 | 決定留在客戶端或由伺服器代理，保留錯誤語意 |
+| `frontend/app.js`、`frontend/js/components/`、`frontend/js/app/stock-search.js` | HTML、DOM、路由與 UI 狀態 | 按功能改寫成 React 元件／hooks |
+| `frontend/styles.css` | 目前樣式與設計 token | 先保留視覺結果，再按元件範圍整理 |
+| `scripts/build-static.cjs`、`frontend/app.bundle.js` | 支援本機 HTML 的建置 | 正式切換交付方式後交由 Next.js 建置取代 |
 
 ## 已建立的核心介面
 
@@ -47,7 +49,7 @@ flowchart TD
 - `replace(snapshot)`：替換記憶體狀態並通知，不寫入 repository。
 - `whenIdle()`：等待已排隊寫入結束；寫入錯誤由各次 `save()` 的呼叫端處理。
 
-快照視為唯讀，不得直接修改 `getSnapshot()` 的屬性。`app.js` 現階段由訂閱更新讀取參照，畫面不再自行修改設定預設值。
+快照視為唯讀，不得直接修改 `getSnapshot()` 的屬性。`frontend/app.js` 現階段由訂閱更新讀取參照，畫面不再自行修改設定預設值。
 
 載入流程先等待寫入，記住 revision，再讀 repository；資料返回時只有 revision 仍相同才套用設定。清除／還原另須等待舊寫入與資料遷移後再替換。`replace()` 本身不是取消請求或中止寫入的工具。
 
@@ -65,7 +67,7 @@ flowchart TD
 
 `asOfDate` 控制持股、價格與分割的計算基準，股息報表仍保留已公告的未來發放項目。因此整份摘要不是只含過去資料的歷史損益報表；歷史資產曲線由 `calculateTrendHistory` 產生。
 
-目前 `app.js` 依交易陣列、快取陣列、日期與股息依據快取摘要。更新資料時必須替換陣列參照，否則快取不會失效。核心輸出為普通資料物件，方便未來作為 API 回應或畫面 props。
+目前 `frontend/app.js` 依交易陣列、快取陣列、日期與股息依據快取摘要。更新資料時必須替換陣列參照，否則快取不會失效。核心輸出為普通資料物件，方便未來作為 API 回應或畫面 props。
 
 ## 建議的遷移順序
 
@@ -80,7 +82,7 @@ flowchart TD
 
 ## 尚未完成的生命週期工作
 
-目前 `app.js` 仍有模組層級 UI 狀態，匯入會讀取 DOM、註冊事件並啟動載入。它不能直接匯入 Server Component，也尚未提供可重複 mount/dispose 的介面。
+目前 `frontend/app.js` 仍有模組層級 UI 狀態，匯入會讀取 DOM、註冊事件並啟動載入。它不能直接匯入 Server Component，也尚未提供可重複 mount/dispose 的介面。
 
 將現有畫面暫時嵌入 React 前，至少需要完成：
 
@@ -114,11 +116,11 @@ Next.js 靜態匯出可繼續使用靜態主機，但應規劃透過網址開啟
 
 ## Cloudflare Pages 交付
 
-`node scripts/build-pages.cjs` 沿用 `build-static.cjs` 的 `buildBundle()`，在 `dist/` 產生最新腳本並複製 HTML／CSS 與頁面提供下載的公開範例 `my-stock-transactions.csv`，不修改根目錄產物。僅允許發布這四個檔案，避免公開其他個人 CSV、測試與文件；每次建置清空重建 `dist/`。新增圖片等執行時資源時，須同步更新 Pages 發布清單。Git 整合的建置命令與 `dist` 輸出目錄須於控制台設定，不新增影響既有 Workers 的 Wrangler 設定。詳見 [部署指南](cloudflare-pages.md)。
+`node scripts/build-pages.cjs` 沿用 `build-static.cjs` 的 `buildBundle()`，在 `dist/` 產生最新腳本並複製 HTML／CSS 與頁面提供下載的公開範例 `my-stock-transactions.csv`，不修改 frontend/app.bundle.js。僅允許發布這四個檔案，避免公開其他個人 CSV、測試與文件；每次建置清空重建 `dist/`。新增圖片等執行時資源時，須同步更新 Pages 發布清單。Git 整合的建置命令與 `dist` 輸出目錄須於控制台設定，不新增影響既有 Workers 的 Wrangler 設定。詳見 [部署指南](cloudflare-pages.md)。
 
 ## 驗證方式
 
-在專案根目錄執行 `node scripts/build-static.cjs`、`node --test`、`node scripts/build-static.cjs --check`、`git diff --check`。本次驗證環境為 Node.js 26.8.1。
+在專案根目錄執行 `node scripts/build-static.cjs`、`node --test`、`node scripts/build-static.cjs --check`、`git diff --check`。連線版驗證環境為 Node.js 24.14.1。
 
 - `tests/architecture.test.js`：阻止可重用模組依賴畫面／儲存／網路，檢查無瀏覽器環境匯入。
 - `tests/settings-store.test.js`：設定訂閱、寫入排隊、失敗恢復與實例隔離。
@@ -131,13 +133,13 @@ Next.js 靜態匯出可繼續使用靜態主機，但應規劃透過網址開啟
 
 ## 分割校正與股票比較（2026-09-29）
 
-- `js/domain/splits.js`：純函式，解析分割事件、計算累積股數倍率與價格換算。所有計算接收日期；分割當天的交易已屬新股數基準，只有事件日前的持股乘倍率。多次事件累乘，總取得成本不變。反分割保留小數等值股數，不自行假設零股售出日或現金結算價。
+- `frontend/js/domain/splits.js`：純函式，解析分割事件、計算累積股數倍率與價格換算。所有計算接收日期；分割當天的交易已屬新股數基準，只有事件日前的持股乘倍率。多次事件累乘，總取得成本不變。反分割保留小數等值股數，不自行假設零股售出日或現金結算價。
 - `TaiwanStockSplitPrice` 以完整清單同步，涵蓋來源提供的分割、反分割及面額變更。參考價會四捨五入，不能直接用前後價相除：以一分錢誤差容許值、分母 1～10／分子 1～1000 尋找唯一比例。這是推得的比例，不是來源直接提供的法定股數比例；沒有唯一解就標記錯誤，不能猜測。來源未列出的事件亦無法自動補出。
 - 市場快取新增 `splits`、`splitCheckedThrough`、`splitError`。成功更新以完整快照取代，處理修訂／取消；失敗保留舊事件並標記不完整。舊快取缺少確認日期時會自動補查。這些欄位是可重建快取，JSON 個人資料備份 schema 維持 3。
 - 持股、市值、逐筆與群組損益、資產走勢、股息收取及預估股息都使用相同分割規則。`calculateHoldingGroups(transactions, marketCaches, asOfDate)` 支援日期與事件輸入；舊單參數呼叫仍可用。`calculatePortfolioSnapshot` 的持股和最新價格現以 `asOfDate` 截取，價格再換成該日股數基準；已公告的未來股息仍保留供畫面呈現。
 - 配息領取按除息資格日持股計算，不以發放日股數代替。近 12 個月預估股息會把歷史每股配息換算成目前股數基準；配息與分割資料都完整時才顯示完整退休試算。行情表保留未還原 OHLC，分割日加標記，行情漲跌幅改用同基準的前收盤價。
-- `js/domain/comparison.js`：計算 2～5 檔的共同起訖交易日，以分割調整後價格起算 0%。中間缺價為 `null`，不補 0、不畫連接線。支援 `mode: price | cash | stock | total`，分別為純股價、現金再投入、配股、兩者皆含；未傳 mode 時保留 `reinvestDividends`／`reinvest` 的舊布林入口（true 對應 total）。`normaliseComparisonDividends(rows)` 加總盈餘及公積股利，分別保留 `exDate` 與 `stockExDate`。現金於除息日收盤價買入小數股，股票股利於除權日以每 10 元換算 1 股；同日所有股利使用相同資格股數，不讓同日新股再次領息。現金事件缺當日價格、所選股利缺日期或覆蓋不足時停止計算；其他缺價日保留曲線缺口。
-- `js/app/comparison-page.js`：搜尋、多選、日期、股息再投入切換、圖表與浮動 tooltip。依賴透過參數注入；直接沿用 `stockSearch.suggestions()`／`resolve()` 與 FinMind service。提供現金再投入與配股兩個獨立按鈕，均使用 aria-pressed。任一開啟時查詢 `TaiwanStockDividend`（1990-01-01 至 2100-01-01），涵蓋來源已公告的完整資料，避免 API 的權利分派基準日篩選漏掉圖表期末除息；覆蓋僅確認至傳入的市場日期，不宣稱未來資料完整。比較股利只沿用本頁工作階段的完整格式，不沿用持股頁舊快取。切換選項先取消舊工作，等待結束後以固定 mode 重新計算；revision 防止清除／日期修改後復活。成功快照在工作階段內重用，清除或重新開啟會重新取得公告修訂。清除／還原時由 `replaceDataSafely()` 取消比較請求並清空工作階段快取，避免舊回應復活。
+- `frontend/js/domain/comparison.js`：計算 2～5 檔的共同起訖交易日，以分割調整後價格起算 0%。中間缺價為 `null`，不補 0、不畫連接線。支援 `mode: price | cash | stock | total`，分別為純股價、現金再投入、配股、兩者皆含；未傳 mode 時保留 `reinvestDividends`／`reinvest` 的舊布林入口（true 對應 total）。`normaliseComparisonDividends(rows)` 加總盈餘及公積股利，分別保留 `exDate` 與 `stockExDate`。現金於除息日收盤價買入小數股，股票股利於除權日以每 10 元換算 1 股；同日所有股利使用相同資格股數，不讓同日新股再次領息。現金事件缺當日價格、所選股利缺日期或覆蓋不足時停止計算；其他缺價日保留曲線缺口。
+- `frontend/js/app/comparison-page.js`：搜尋、多選、日期、股息再投入切換、圖表與浮動 tooltip。依賴透過參數注入；直接沿用 `stockSearch.suggestions()`／`resolve()` 與 FinMind service。提供現金再投入與配股兩個獨立按鈕，均使用 aria-pressed。任一開啟時查詢 `TaiwanStockDividend`（1990-01-01 至 2100-01-01），涵蓋來源已公告的完整資料，避免 API 的權利分派基準日篩選漏掉圖表期末除息；覆蓋僅確認至傳入的市場日期，不宣稱未來資料完整。比較股利只沿用本頁工作階段的完整格式，不沿用持股頁舊快取。切換選項先取消舊工作，等待結束後以固定 mode 重新計算；revision 防止清除／日期修改後復活。成功快照在工作階段內重用，清除或重新開啟會重新取得公告修訂。清除／還原時由 `replaceDataSafely()` 取消比較請求並清空工作階段快取，避免舊回應復活。
 - 股票比較使用 `#stock-comparison`，側欄位於「額外工具」。圖表同時提供鍵盤、觸控、文字摘要和每日資料表。切換日期／標的會清除舊結果並取消請求；分割或股息查詢失敗會阻止產生誤導曲線。
 - 原本已把分割股數人工當作「配股」記入的資料不會自動刪除或猜測修正；畫面明確提醒核對，避免重複加股。
 
@@ -147,7 +149,17 @@ Next.js 靜態匯出可繼續使用靜態主機，但應規劃透過網址開啟
 
 ## 共用持股走勢（2026-11-10）
 
-- `js/components/asset-trend-chart.js` 的 `createAssetTrendChart` 為瀏覽器 UI 元件；首頁、整檔持股及單筆交易共用繪圖與操作。透過 getter 注入交易、行情、設定、台北日期與掛載容器；不同實例各自保留頻率、期間及明細狀態。彈出視窗使用獨立的 ID 前綴。
-- `render()` 產生圖表 HTML，插入容器後呼叫 `bind()`；`repaint()` 更新目前容器，`dispose()` 移除事件監聽並取消動畫與拖曳。容器被替換或視窗關閉前必須呼叫 `dispose()`。這只是圖表生命週期，不代表整個 `app.js` 已完成 mount/dispose。
+- `frontend/js/components/asset-trend-chart.js` 的 `createAssetTrendChart` 為瀏覽器 UI 元件；首頁、整檔持股及單筆交易共用繪圖與操作。透過 getter 注入交易、行情、設定、台北日期與掛載容器；不同實例各自保留頻率、期間及明細狀態。彈出視窗使用獨立的 ID 前綴。
+- `render()` 產生圖表 HTML，插入容器後呼叫 `bind()`；`repaint()` 更新目前容器，`dispose()` 移除事件監聽並取消動畫與拖曳。容器被替換或視窗關閉前必須呼叫 `dispose()`。這只是圖表生命週期，不代表整個 `frontend/app.js` 已完成 mount/dispose。
 - `calculateTrendHistory` 每筆資料新增 `cost`，表示該日累積取得成本（含手續費與再投入）；分割不改變成本。首頁保留原本外部投入成果口徑，持股／單筆使用取得成本計算帳面報酬並繪製成本線。
 - 單筆僅納入選定交易，不推定後續再投入或配股的歸屬。整檔納入該股票全部交易；兩者的帳面損益皆不加計現金股息，零成本交易不顯示無限大的報酬率。缺價沿用成本估算，已知分割套用原有校正規則。備份格式不變。
+
+## 連線版分支與責任（2026-11-10）
+
+開發與部署分支為 `codex/online-platform`；`main` 保留既有版本。原本根目錄前端全部移入 `frontend/`，建置產物為 `frontend/app.bundle.js`；測試與建置指令仍由根目錄執行。上述 Next.js 遷移計畫屬未來工作，連線版不以遷移框架為前置條件。
+
+`frontend/js/repositories/cloud.js` 管理單頁的帳號快照、寫入排隊及伺服器 revision；`browser.js` 保留既有方法，登入後把個人資料轉交 cloud store，市場快取維持本機。`frontend/js/app/cloud-session.js` 管理 HTTP、雲端模式判斷及 Google script 載入。`frontend/app.js` 協調登入畫面、啟動與登出，切換帳號透過重新載入清除整個舊生命週期。API 失敗不改用本機儲存。
+
+`backend/server/api.mjs` 管理 HTTP、Origin／session／帳號驗證及 D1；`google-auth.mjs` 使用 Web Crypto 驗證 Google ID token。後端只匯入 frontend 內不依賴瀏覽器的既有 domain 驗證及常數，不匯入 app.js 或 UI。若未來獨立發布前後端，可再把這些純核心移到 shared，目前避免複製規則。D1 個人資料為 512 KiB 內的 versioned JSON 快照，單次 SQL compare-and-swap 確保清除／還原原子性；目前不是逐筆 SQL 表，也不提供離線合併。
+
+`tests/cloud-platform.test.js` 以記憶體 SQLite 執行實際遷移 SQL 與 API 使用的查詢，透過 D1 介面轉接測試帳號隔離、版本衝突、原子替換、session 撤銷與過期；Google 簽章使用本機 RSA 金鑰實際簽署及驗證。這些仍不等同遠端 D1 或真實 Google 瀏覽器驗收。

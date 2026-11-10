@@ -2,7 +2,7 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 
 test('CSV parser supports quoted commas, escaped quotes, and embedded newlines', async () => {
-  const { parseCsvRows } = await import('./js/lib/csv.js');
+  const { parseCsvRows } = await import('./frontend/js/lib/csv.js');
   const rows = parseCsvRows('symbol,note,quantity\r\n0050,"長期, 核心",10\r\n2330,"股東說""讚""\n第二行",2');
   assert.equal(rows.length, 2);
   assert.equal(rows[0].note, '長期, 核心');
@@ -13,7 +13,7 @@ test('CSV parser supports quoted commas, escaped quotes, and embedded newlines',
 });
 
 test('backup validation rejects malformed or duplicate records before restore', async () => {
-  const { validateBackupPayload } = await import('./js/domain/backup.js');
+  const { validateBackupPayload } = await import('./frontend/js/domain/backup.js');
   const valid = {
     schemaVersion:3,
     transactions:[{id:'t1',date:'2026-08-30',acquisitionType:'MANUAL_BUY',symbol:'0050',quantity:1,price:100,fee:0}],
@@ -44,12 +44,12 @@ test('corrupted local storage is surfaced without overwriting the raw value', as
     setItem:() => { throw Error('must not write'); },
     removeItem:() => { throw Error('must not remove'); },
   };
-  const { getAllRecords } = await import(`./js/lib/storage.js?corrupt=${Date.now()}`);
+  const { getAllRecords } = await import(`./frontend/js/lib/storage.js?corrupt=${Date.now()}`);
   await assert.rejects(() => getAllRecords('transactions'), /資料已損壞/);
 });
 
 test('CSV import detects the same file and suspicious duplicate rows', async () => {
-  const { planCsvTransactionImport } = await import('./js/domain/transaction-import.js');
+  const { planCsvTransactionImport } = await import('./frontend/js/domain/transaction-import.js');
   let id = 0;
   const csv = 'date,acquisition_type,symbol,quantity,price,fee\n2026-08-30,MANUAL_BUY,0050,10,100,0';
   const first = planCsvTransactionImport(csv, [], () => `id-${++id}`, '2026-08-31T00:00:00.000Z');
@@ -69,7 +69,7 @@ test('FinMind requests abort after the configured timeout', async () => {
     options.signal.addEventListener('abort', () => reject(Object.assign(Error('aborted'), { name:'AbortError' })));
   });
   try {
-    const { fetchFinMindData } = await import('./js/services/finmind.js');
+    const { fetchFinMindData } = await import('./frontend/js/services/finmind.js');
     await assert.rejects(() => fetchFinMindData('TaiwanStockInfo', null, null, undefined, { timeoutMs:5 }), /連線逾時/);
   } finally {
     global.fetch = originalFetch;
@@ -90,7 +90,7 @@ test('local storage bulk replacement rolls back all collections on failure', asy
     },
     removeItem:key => values.delete(key),
   };
-  const { getAllRecords, replaceAllRecords, saveRecords } = await import('./js/lib/storage.js');
+  const { getAllRecords, replaceAllRecords, saveRecords } = await import('./frontend/js/lib/storage.js');
   await saveRecords('transactions', [{id:'new'}]);
   assert.deepEqual((await getAllRecords('transactions')).map(row=>row.id), ['old','new']);
   await assert.rejects(() => replaceAllRecords({transactions:[{id:'replacement'}],settings:[{id:'default',value:'new'}]}), /quota/);

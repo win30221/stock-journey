@@ -7,7 +7,7 @@ const quote = (date, close) => ({ date, close });
 const cache = (overrides = {}) => ({ symbol:'0050', name:'測試 ETF', splits:[event('2026-06-02', 4)], splitCheckedThrough:'2026-09-07', prices:[quote('2026-06-01',100),quote('2026-06-02',25),quote('2026-06-03',30)], dividends:[], dividendCoverageFrom:'2025-01-01', dividendCheckedThrough:'2026-09-07', ...overrides });
 
 test('rounded reference prices resolve exact ratios; invalid or ambiguous events fail closed', async () => {
-  const { referenceSplitRatio, normaliseSplitEvents } = await import('../js/domain/splits.js');
+  const { referenceSplitRatio, normaliseSplitEvents } = await import('../frontend/js/domain/splits.js');
   assert.equal(referenceSplitRatio(188.65,47.16),4);
   assert.equal(referenceSplitRatio(443.15,20.14),22);
   assert.equal(referenceSplitRatio(2.04,12.23),1/6);
@@ -22,9 +22,9 @@ test('rounded reference prices resolve exact ratios; invalid or ambiguous events
 });
 
 test('holdings, individual lots, price basis and asset history stay consistent over a split', async () => {
-  const {calculatePortfolioSnapshot} = await import('../js/app/portfolio-model.js');
-  const {calculateTrendHistory} = await import('../js/domain/trend.js');
-  const {splitAdjustedQuantity} = await import('../js/domain/splits.js');
+  const {calculatePortfolioSnapshot} = await import('../frontend/js/app/portfolio-model.js');
+  const {calculateTrendHistory} = await import('../frontend/js/domain/trend.js');
+  const {splitAdjustedQuantity} = await import('../frontend/js/domain/splits.js');
   const transactions = [tx('2026-06-01'),tx('2026-06-02',20,25)];
   const caches = [cache()];
   const original = JSON.stringify({transactions,caches});
@@ -45,8 +45,8 @@ test('holdings, individual lots, price basis and asset history stay consistent o
 });
 
 test('multiple splits and reverse splits preserve cost, including fractional equivalent shares', async () => {
-  const {calculateHoldingGroups} = await import('../js/domain/portfolio.js');
-  const {calculateTrendHistory,aggregateTrendMonths} = await import('../js/domain/trend.js');
+  const {calculateHoldingGroups} = await import('../frontend/js/domain/portfolio.js');
+  const {calculateTrendHistory,aggregateTrendMonths} = await import('../frontend/js/domain/trend.js');
   const c = cache({splits:[event('2026-06-02',4),event('2026-06-03',1/7)],prices:[quote('2026-06-01',100),quote('2026-06-02',25),quote('2026-06-03',175)]});
   const transactions = [tx('2026-06-01')];
   const group = calculateHoldingGroups(transactions,[c],'2026-06-03')[0];
@@ -58,7 +58,7 @@ test('multiple splits and reverse splits preserve cost, including fractional equ
 });
 
 test('dividends use ex-date denomination, payment date does not change entitlement, forecast normalises old DPS', async () => {
-  const {calculateDividendReceipts,calculateProjectedAnnualDividends} = await import('../js/domain/dividends.js');
+  const {calculateDividendReceipts,calculateProjectedAnnualDividends} = await import('../frontend/js/domain/dividends.js');
   const dividends = [
     {exDate:'2026-06-01',paymentDate:'2026-06-10',cash:4},
     {exDate:'2026-06-02',paymentDate:'2026-06-10',cash:1},
@@ -76,7 +76,7 @@ test('dividends use ex-date denomination, payment date does not change entitleme
 });
 
 test('comparison starts at a shared zero, adjusts splits and leaves missing dates as gaps', async () => {
-  const {calculateStockComparison} = await import('../js/domain/comparison.js');
+  const {calculateStockComparison} = await import('../frontend/js/domain/comparison.js');
   const other=cache({symbol:'2330',splits:[],prices:[quote('2026-06-01',100),quote('2026-06-03',110)]});
   const r=calculateStockComparison({symbols:['0050','2330'],marketCaches:[cache(),other],startDate:'2026-05-30',endDate:'2026-06-05'});
   assert.equal(r.actualStart,'2026-06-01');assert.equal(r.actualEnd,'2026-06-03');
@@ -101,7 +101,7 @@ test('existing transaction and market views use corrected quantities and split-d
 });
 
 async function comparisonHarness(t, fetchData, existingCaches = []) {
-  const {createComparisonPage} = await import('../js/app/comparison-page.js');
+  const {createComparisonPage} = await import('../frontend/js/app/comparison-page.js');
   const f=createAppFixture(t);
   for (const id of ['comparisonQuery','comparisonAdd','comparisonSuggestions','comparisonStart','comparisonEnd','comparisonForm','comparisonReinvest','comparisonStock']) f.element(id);
   const catalog=[{symbol:'0050',name:'元大台灣50'},{symbol:'2330',name:'台積電'}];
@@ -194,7 +194,7 @@ test('floating tooltip tracks dates, clamps within chart, supports touch/keyboar
 });
 
 test('retirement forecast is incomplete until split data is verified, even with full dividend history', async () => {
-  const {calculateProjectedAnnualDividends} = await import('../js/domain/dividends.js');
+  const {calculateProjectedAnnualDividends} = await import('../frontend/js/domain/dividends.js');
   const input={transactions:[tx('2026-06-01')],marketCaches:[cache({splitCheckedThrough:null})],asOfDate:'2026-09-07'};
   assert.equal(calculateProjectedAnnualDividends(input).coverageComplete,false);
   input.marketCaches=[cache()];
@@ -202,8 +202,8 @@ test('retirement forecast is incomplete until split data is verified, even with 
 });
 
 test('zero trade quotes and unheld split events cannot introduce an artificial asset drop', async () => {
-  const {calculatePortfolioSnapshot} = await import('../js/app/portfolio-model.js');
-  const {calculateTrendHistory} = await import('../js/domain/trend.js');
+  const {calculatePortfolioSnapshot} = await import('../frontend/js/app/portfolio-model.js');
+  const {calculateTrendHistory} = await import('../frontend/js/domain/trend.js');
   const transactions=[tx('2026-06-01')];
   const marketCaches=[cache({prices:[quote('2026-06-01',100),quote('2026-06-02',0)]}),cache({symbol:'2330',prices:[],splits:[event('2026-06-03',2)]})];
   const snapshot=calculatePortfolioSnapshot({transactions,marketCaches,dividendDateBasis:'PAYMENT_DATE',asOfDate:'2026-06-03'});
@@ -214,7 +214,7 @@ test('zero trade quotes and unheld split events cannot introduce an artificial a
 });
 
 test('selected end date may exceed the newest prices; split coverage is required only through actual end', async () => {
-  const {calculateStockComparison} = await import('../js/domain/comparison.js');
+  const {calculateStockComparison} = await import('../frontend/js/domain/comparison.js');
   const data=['0050','2330'].map(symbol=>cache({symbol,splits:[],splitCheckedThrough:'2026-09-24',prices:[quote('2026-06-30',100),quote('2026-09-24',110)]}));
   const r=calculateStockComparison({symbols:['0050','2330'],marketCaches:data,startDate:'2026-06-30',endDate:'2026-09-28'});
   assert.equal(r.requestedEnd,'2026-09-28');
@@ -243,7 +243,7 @@ test('comparison date fields do not impose the market-calendar maximum and later
 });
 
 test('calculateStockComparison calculates exact cash and stock dividend reinvestment with split coordination', async () => {
-  const { calculateStockComparison } = await import('../js/domain/comparison.js');
+  const { calculateStockComparison } = await import('../frontend/js/domain/comparison.js');
   const divStock = cache({
     symbol: '0050',
     splits: [event('2026-06-02', 4)],
@@ -376,7 +376,7 @@ test('comparison UI toggles dividend reinvestment, fetches dividends and reflect
 });
 
 test('independent cash and stock options calculate four distinct returns and separate ex-dates', async () => {
-  const { calculateStockComparison, normaliseComparisonDividends } = await import('../js/domain/comparison.js');
+  const { calculateStockComparison, normaliseComparisonDividends } = await import('../frontend/js/domain/comparison.js');
   const dividends = normaliseComparisonDividends([{
     CashEarningsDistribution: 2, CashStatutorySurplus: 3,
     StockEarningsDistribution: 0.5, StockStatutorySurplus: 0.5,
@@ -397,7 +397,7 @@ test('independent cash and stock options calculate four distinct returns and sep
 });
 
 test('cash reinvestment rejects missing ex-date quotes and unverified dividend coverage', async () => {
-  const { calculateStockComparison } = await import('../js/domain/comparison.js');
+  const { calculateStockComparison } = await import('../frontend/js/domain/comparison.js');
   const first = cache({
     splits: [event('2026-06-03', 2)],
     prices: [quote('2026-06-01', 100), quote('2026-06-03', 50)],
@@ -513,7 +513,7 @@ test('reset while a toggle waits for cancellation cannot restart the old compari
 });
 
 test('stock events respect interval boundaries and remain correct across a missing quote and split', async () => {
-  const { calculateStockComparison } = await import('../js/domain/comparison.js');
+  const { calculateStockComparison } = await import('../frontend/js/domain/comparison.js');
   const stocks = [cache({
     splits: [event('2026-06-03', 2)],
     prices: [quote('2026-06-01', 100), quote('2026-06-03', 50)],

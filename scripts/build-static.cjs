@@ -1,7 +1,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 
-const projectRoot = path.resolve(__dirname, '..');
+const projectRoot = path.resolve(__dirname, '../frontend');
 const outputPath = path.join(projectRoot, 'app.bundle.js');
 const sourceFiles = [
   'js/lib/constants.js',
@@ -21,12 +21,14 @@ const sourceFiles = [
   'js/domain/transaction-import.js',
   'js/domain/stock-catalog.js',
   'js/repositories/browser.js',
+  'js/repositories/cloud.js',
   'js/services/finmind.js',
   'js/components/dialog.js',
   'js/components/asset-trend-chart.js',
   'js/components/confirmation.js',
   'js/components/toast.js',
   'js/app/router.js',
+  'js/app/cloud-session.js',
   'js/app/settings.js',
   'js/app/portfolio-model.js',
   'js/app/async-state.js',
