@@ -2,13 +2,15 @@
 
 本文件適用 `codex/online-platform` 分支。`main` 保留既有本機版本；連線版的 Pages 正式部署分支為 `codex/online-platform`。
 
-2026-11-10 已建立獨立 Pages 專案 `stock-journey-online`，並以 CLI 部署至 https://stock-journey-online.pages.dev/。D1 同名資料庫已初始化，正式環境 `DB` 綁定已完成。Google Cloud 專案為 `stock-journey-online`，品牌與網頁 OAuth 用戶端已建立，授權來源僅為正式網站 origin；公開 Client ID 已設入 Pages 正式環境的 `GOOGLE_CLIENT_ID`，未使用 Client Secret。此專案目前採手動 CLI 部署，尚未連接 GitHub 自動部署；原有 `stock-journey` 專案未變更。
+正式網站統一使用 https://stock-journey.pages.dev/#overview ，Pages 專案名稱為 `stock-journey`。2026-11-10 已將原站的正式分支從 `main` 改為 `codex/online-platform`，沿用 GitHub 整合並啟用此分支的自動正式部署，其他分支的 Preview 自動部署已關閉。`main` 程式未合併或改寫。
 
-部署後已確認首頁及 `/api/config` 回傳 200，未登入的 `/api/session`、`/api/data` 回傳 401，Google 登入按鈕與帳號選擇畫面可正常顯示。Google 帳號彈出視窗由使用者手動選取並成功登入；已實際觀察登入後的投資儀表板，重新載入後 session 與儀表板仍正常。遠端 D1 唯讀核對為 1 份帳號快照、revision 2，並已保存 1 份預設退休計畫及 1 份設定，確認登入後讀寫已串通。未向正式帳號加入假交易；交易編輯、還原／清除、登出、跨裝置與多帳號隔離仍需另做線上驗收，現有自動測試不取代這些實測。
+正式環境沿用現有 D1 `stock-journey-online`（DB binding），Google Cloud 專案也保留 `stock-journey-online` 名稱；這些是既有資源名稱，不代表另開一個網站。Google Client ID 不變，授權 JavaScript origin 已由使用者改為 `https://stock-journey.pages.dev`，公開 Client ID 已設入原站正式環境；不使用 Client Secret。多餘的 `stock-journey-online` Pages 網站已移除；Cloudflare Pages 專案清單已核對只剩 `stock-journey`。D1 與 Google 專案保留。
 
-Google Auth Platform 目前保留「測試」發布狀態。本版 Google Identity Services 僅使用 `openid`、`email`、`profile` 基本身分範圍，依 [Google 官方基本身分範圍例外規則](https://developers.google.com/identity/protocols/oauth2/production-readiness/overview)，使用者不需列入測試名單；若未來增加 Gmail、Drive 等範圍，須重新檢查測試使用者、發布及驗證要求。
+原網址最新部署已確認首頁及 `/api/config` 回傳 200，HTML 為 cloud 模式並包含最新帳號 UI；未登入的 `/api/session`、`/api/data` 回傳 401。使用者已確認原網址 Google 登入正常。本輪 Work 設定停用了本機瀏覽器操作，因此登入成功為使用者回報；工具另驗證了正式部署、API 狀態、分支限制與資料庫綁定。先前已在連線版舊網域驗證 Google 登入、重新載入維持 session 與 D1 的預設計畫／設定寫入。250 項自動測試通過；帳號選單的桌面、390px 手機、Escape／Tab 與本機草稿登出流程也已驗收。新 origin 登入已由使用者確認；正式環境的多帳號／跨裝置及完整交易操作仍需另做驗收。
 
-帳號 UI 更新已從 `codex/online-platform` 的 `d332966` 部署，部署網址為 https://2db455fb.stock-journey-online.pages.dev/，正式網址不變。250 項自動測試通過；實際 Chrome 驗收包含正式站的桌面／390px 手機帳號入口與選單、44×44 手機按鈕及無水平溢出。本機隔離預覽另驗證 Escape／Tab、生活費草稿登出確認、返回編輯保留內容、無草稿直接登出及登入頁錯誤重試；本機預覽使用測試帳號與記憶體 API，不代表正式環境的交易／還原／多帳號驗收。401 與儲存失敗阻止登出等情境由自動測試驗證；未登出正在使用的正式帳號。
+切換網址不會移動或刪除瀏覽器舊資料；原站本機資料仍可由登入頁或設定頁「從舊版搬移資料」下載，登入後再匯入。兩個 origin 的 session Cookie 不共用，回到原網址需重新 Google 登入，但 D1 帳號資料是同一份。
+
+Google Auth Platform 保留「測試」發布狀態。本版只使用 `openid`、`email`、`profile`，依 [Google 官方基本身分範圍例外規則](https://developers.google.com/identity/protocols/oauth2/production-readiness/overview)，基本登入不需要測試使用者名單；增加 Gmail／Drive 權限前須重新檢查發布與驗證要求。
 
 ## 目錄與部署邊界
 
@@ -24,7 +26,7 @@ Google Auth Platform 目前保留「測試」發布狀態。本版 Google Identi
 
 1. 在 Google Cloud Console 建立／選擇專案，設定 Google Auth Platform 的 Branding、Audience 與網站資料。
 2. 建立 OAuth 用戶端，類型選「網頁應用程式」。
-3. Authorized JavaScript origins 加入完整正式 origin，例如 `https://stock-journey-online.pages.dev`，之後使用自訂網域也須加入。不要加入 hash 或路徑。
+3. Authorized JavaScript origins 加入完整正式 origin，例如 `https://stock-journey.pages.dev`，之後使用自訂網域也須加入。不要加入 hash 或路徑。
 4. 本版使用 Google Identity Services 的 JavaScript callback，後端驗證 ID token；不需要 OAuth client secret 或 redirect callback URL。
 5. 測試模式下，依 Google 控制台要求加入測試使用者；公開上線前完成相應發布設定。
 6. 複製 Client ID（通常以 `.apps.googleusercontent.com` 結尾）。Client ID 為公開識別值；不把登入憑證存進 localStorage。
@@ -44,14 +46,15 @@ npx wrangler d1 create stock-journey-online
 npx wrangler d1 execute DB --config backend/wrangler.d1.jsonc --remote --file backend/migrations/0001_accounts.sql
 ```
 
-第一次 SQL 使用 CREATE IF NOT EXISTS，可重複執行，不會清除既有個人資料。請勿在後續部署時刪除重建資料庫。
+現有 D1 已建立且包含帳號資料，不要重建或改成另一個資料庫。上述 create 僅供全新環境參考。第一次 SQL 使用 CREATE IF NOT EXISTS，可重複執行，不會清除既有個人資料。請勿在後續部署時刪除重建資料庫。
 
 ## 3. Pages Git 整合
 
-建議為連線版建立獨立 Pages project，例如 `stock-journey-online`，保留原站：
+使用既有 Pages project `stock-journey`，不要再建立第二個網站：
 
 | 設定 | 值 |
 | --- | --- |
+| Project name | `stock-journey` |
 | Repository | `win30221/stock-journey` |
 | Production branch | `codex/online-platform` |
 | Framework preset | None |
@@ -62,14 +65,14 @@ npx wrangler d1 execute DB --config backend/wrangler.d1.jsonc --remote --file ba
 
 在 Pages Settings 的 Variables and Secrets 設定 `GOOGLE_CLIENT_ID`；在 Bindings 新增名為 `DB` 的 D1 binding，指向 `stock-journey-online`。設定完成後重新部署。這兩項都必須對應正式環境，不能只設 Preview。
 
-在 Builds 的分支控制中停用其他分支的 Preview 自動部署，或只允許連線版分支。建置腳本另會拒絕 `CF_PAGES_BRANCH` 不是 `codex/online-platform` 的建置。Production branch 是控制台設定，單純建立本機 Git 分支不會自動改變它。
+在 Builds 的分支控制中，正式部署分支設為 `codex/online-platform` 並啟用自動部署；Preview 自動部署設為 None。建置腳本另會拒絕 `CF_PAGES_BRANCH` 不是 `codex/online-platform` 的建置。Production branch 是控制台設定，單純建立本機 Git 分支不會自動改變它。
 
 若使用手動 CLI 部署，須先確認目前分支，然後在根目錄執行：
 
 ```sh
 git switch codex/online-platform
 node scripts/build-pages.cjs
-npx wrangler pages deploy dist --project-name stock-journey-online --branch codex/online-platform
+npx wrangler pages deploy dist --project-name stock-journey --branch codex/online-platform
 ```
 
 不可使用控制台拖曳純靜態檔案方式部署這個連線版，因為本版需要 Pages Functions。也不要改用 Workers deploy 命令或變更原先獨立 Worker。

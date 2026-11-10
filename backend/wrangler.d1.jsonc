@@ -1,5 +1,5 @@
 {
-  // Production D1 created for the isolated stock-journey-online Pages project.
+  // Existing production D1, now bound to the canonical stock-journey Pages project.
   // This config is for D1 commands only; Pages deploys from the repository root.
   "name": "stock-journey-online-data",
   "compatibility_date": "2026-11-10",

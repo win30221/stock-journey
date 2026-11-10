@@ -17,6 +17,8 @@ git diff --check
 
 ## Cloudflare Pages 部署
 
+正式網址統一為 [stock-journey.pages.dev](https://stock-journey.pages.dev/#overview)。既有 Pages 專案從 `codex/online-platform` 自動部署；其他分支不自動發布預覽。D1 沿用既有資料庫。
+
 執行 `node scripts/build-pages.cjs`，再以 `dist/` 作為部署目錄；僅發布 HTML、CSS、最新 bundle 與頁面提供下載的公開範例 CSV，不複製其他個人檔案。建置會清空重建 `dist/`，請勿在其中存放資料。本機模式改為直接開啟 frontend/index.html。連線版還需部署 Pages Functions 並設定 D1 與 Google Client ID。
 
 建立專案、自動部署與資料搬移步驟見 [Cloudflare Pages 部署指南](docs/cloudflare-pages.md)。
