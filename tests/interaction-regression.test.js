@@ -5,7 +5,7 @@ const test = require('node:test');
 const vm = require('node:vm');
 
 function appFunction(name) {
-  const source = fs.readFileSync(path.resolve(__dirname, '..', 'app.js'), 'utf8');
+  const source = fs.readFileSync(path.resolve(__dirname, '..', name === 'trendMonthlyDataTable' ? 'js/components/asset-trend-chart.js' : 'app.js'), 'utf8');
   const result = source.match(new RegExp(`function ${name}\\([^]*?\\n\\}`))?.[0];
   assert.ok(result, `${name} should exist`);
   return result;
@@ -23,7 +23,7 @@ function fixture() {
       addEventListener(name,fn) { if (!listeners.has(name)) listeners.set(name,new Set()); listeners.get(name).add(fn); },
       removeEventListener:(name,fn) => listeners.get(name)?.delete(fn),
       fire(name,extra={}) { const event = { target:this, defaultPrevented:false, preventDefault() { this.defaultPrevented=true; }, ...extra }; for (const fn of listeners.get(name) || []) fn(event); return event; },
-      focus() { document.activeElement=this; },
+      focus(options) { document.activeElement=this; this.focusOptions=options; },
       contains(node) { return node===this || this.children.includes(node); },
       querySelector(selector) { return this.selectors?.[selector] || null; },
       querySelectorAll() { return this.children; },
@@ -33,6 +33,7 @@ function fixture() {
     };
   }
   document.body=element();
+  document.documentElement=element();
   const context={ document, requestAnimationFrame:callback => frames.push(callback) };
   const flush=()=>{ while(frames.length) frames.shift()(); };
   return { document,nodes,element,context,flush };
@@ -50,8 +51,10 @@ test('custom dialogs contain keyboard focus, respect combobox Escape and restore
   f.context.bindDialogFocus(dialog,{initialFocus:'#field',onClose:()=>closed++,returnFocus:()=>trigger.focus()});
   f.flush();
   assert.equal(f.document.activeElement,field);
+  assert.equal(field.focusOptions?.preventScroll,true,'opening the dialog must not scroll its background');
   assert.equal(background.inert,true);
   assert.equal(f.document.body.classList.contains('dialog-open'),true);
+  assert.equal(f.document.documentElement.classList.contains('dialog-open'),true);
   first.focus();
   assert.equal(dialog.fire('keydown',{key:'Tab',shiftKey:true}).defaultPrevented,true);
   assert.equal(f.document.activeElement,last);
@@ -65,6 +68,7 @@ test('custom dialogs contain keyboard focus, respect combobox Escape and restore
   f.flush();
   assert.equal(background.inert,false);
   assert.equal(f.document.body.classList.contains('dialog-open'),false);
+  assert.equal(f.document.documentElement.classList.contains('dialog-open'),false);
   assert.equal(f.document.activeElement,trigger);
   assert.equal(dialog.listeners.get('keydown').size,0);
 });
@@ -145,7 +149,7 @@ test('JSON backup import keeps its native file control keyboard reachable with a
 });
 
 test('monthly chart table uses the last selected observation and keeps estimation status visible', () => {
-  const context={Map,escapeHtml:String,fmt:value=>`TWD ${value}`};
+  const context={Map,showCost:false,escapeHtml:String,fmt:value=>`TWD ${value}`};
   vm.createContext(context); vm.runInContext(appFunction('trendMonthlyDataTable'),context);
   const html=context.trendMonthlyDataTable([
     {date:'2026-01-02',market:100,external:90,estimated:false},

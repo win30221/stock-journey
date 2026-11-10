@@ -13,16 +13,23 @@ import { createStockSearch } from './js/app/stock-search.js';
 import { budgetItemRepository, budgetPlanRepository, marketCacheRepository, replaceBrowserData, settingsRepository, transactionRepository } from './js/repositories/browser.js';
 import { fetchFinMindData } from './js/services/finmind.js';
 import { confirmDestructive } from './js/components/confirmation.js';
-import { bindDialogFocus } from './js/components/dialog.js';
+import { createAssetTrendChart } from './js/components/asset-trend-chart.js';
+import { bindDialogFocus, clearDialogFocus } from './js/components/dialog.js';
 import { toast } from './js/components/toast.js';
 import { hashForPage, pageFromHash } from './js/app/router.js';
-import { calculateTrendHistory, aggregateTrendMonths, memoizeLatest } from './js/domain/trend.js';
+import { memoizeLatest } from './js/domain/trend.js';
 import { createCancellableTask, createAutosave } from './js/app/async-state.js';
 import { createDefaultSettings, createSettingsStore, normaliseSettings, normaliseProjectionSetting, normaliseGainMilestoneInterval, normaliseTrendTooltipEventLimit, normaliseTrendEventMarkerSettings } from './js/app/settings.js';
 import { validateTransactionFields } from './js/domain/transaction-validation.js';
 
 let transactions = [], marketCaches = [], budgetPlans = [], budgetItems = [], syncProgress = '', settings = createDefaultSettings(), page = pageFromHash(globalThis.location?.hash), transactionModalOpen = false, dividendYear = null, marketSymbol = null, marketPriceMonth = null, autoSyncInProgress = false, marketSyncInProgress = false, marketSyncTimer = null, marketTradingDates = [], marketCalendarLoaded = false, marketCalendarRetryAfter = null;
-let trendState = { frequency: 'month', range: 'all', start: null, end: null }, trendDetailDate = null;
+let trendState = { frequency: 'month', range: 'all', start: null, end: null };
+const overviewTrend = createAssetTrendChart({
+  getTransactions:() => transactions, getMarketCaches:() => marketCaches,
+  getSettings:() => settings, getDate:today, getState:() => trendState,
+  getMount:() => document.querySelector('#trendChartMount'),
+});
+let holdingTrend = null, holdingTrendTrigger = null, refreshHoldingTrend = null;
 let budgetEditId = null, budgetEditorOpen = false, budgetDraft = null, budgetReorderMode = false, budgetUndoItem = null, budgetUndoTimer = null, transactionEditId = null, transactionUndoRows = [], transactionUndoTimer = null, aiImportGuideOpen = false;
 let onboardingCompletionNoticeVisible = false;
 const stockSearch = createStockSearch({ getMarketCaches:() => marketCaches, isTransactionModalOpen:() => transactionModalOpen });
@@ -301,6 +308,7 @@ async function maybeAutoSyncMarket() {
   finally { autoSyncInProgress = false; }
 }
 function refreshMarketView() {
+  if (holdingTrend) { refreshHoldingTrend(); return; }
   if (page === 'stock-comparison') return;
   if(page==='retirement-calculator'){
     const assetAmount = document.querySelector('#projectionAssetAmount');
@@ -726,186 +734,101 @@ function retirementCalculatorPage() {
   const contributionSource=monthlyContribution===0?'預設為 0，可直接輸入預計投入金額。':'使用你儲存的投入計畫。';
   return `<section class="projection-page"><section class="projection-source-grid"><article><span>目前可投資資產</span><strong id="projectionAssetAmount">${fmt(currentAssets)}</strong><small>${assetSource}</small><button type="button" data-page="transactions">查看持股與交易</button></article><article><span>近 12 個月預估年股息</span><strong id="projectionDividendAmount">${forecast.coverageComplete?fmt(forecast.annual):'資料待補齊'}</strong><small id="projectionDividendHint">${forecast.coverageComplete?`依目前持股換算，殖利率約 ${(forecast.yield*100).toFixed(1)}%。`:'近一年配息或分割資料尚未完整，請同步市場資料。'}</small><button type="button" data-page="dividends">查看股息現金流</button></article><article><span>目前月生活費目標</span><strong>${currentExpense?fmt(currentExpense):'尚未設定'}</strong><small>依各項生活費的金額基準月換算為本月幣值。</small><button type="button" data-page="budget">查看生活預算</button></article></section><div class="projection-layout"><form id="retirementProjectionForm" class="panel projection-form" novalidate><div class="panel-title"><div><p class="eyebrow">我的退休計畫</p><h2>調整試算條件</h2><p>直接修改即可，結果與設定都會自動更新。</p></div></div><div class="projection-auto-rule"><b>股息優先，自動推算最早退休年齡</b><span>先用目前持股的配息推估支付生活費；不足時才依賣股提領率補足，並固定模擬到 100 歲。</span></div><div id="projectionFormError" class="budget-error-summary" role="alert" tabindex="-1" hidden></div><div class="projection-form-grid"><label class="wide">出生年月<input class="birth-month-input" name="birthMonth" type="month" min="1900-01" max="${currentYearMonth()}" value="${birthMonthConfirmed?projection.birthMonth:''}" required aria-describedby="birthMonthHint"><small id="birthMonthHint">${birthMonthConfirmed?`目前為 ${projection.currentAge} 歲；系統會自動更新年齡。`:'請先選擇出生年月；選擇後會自動更新試算。'}</small></label><label class="wide">退休當時其他月收入<input name="otherMonthlyIncome" type="number" min="0" max="10000000" step="1000" value="${projection.otherMonthlyIncome}" required><small>例如年金或租金；視為退休當年的固定金額，之後不自動隨通膨增加。</small></label><label class="wide">預計每月投入<input name="monthlyContribution" type="number" min="0" max="10000000" step="1000" value="${monthlyContribution.toFixed(0)}" required><small>${contributionSource}</small></label></div><details class="projection-assumptions"><summary>進階假設</summary><div class="projection-form-grid"><label>預期年化總報酬率<input name="annualReturnRate" type="number" min="0" max="20" step="0.1" value="${settings.retirementAnnualReturnRate}" required><small>包含配息；系統會扣除預估股息後，作為股價成長推估，避免重複計算。</small></label><label>預期年通膨率<input name="inflationRate" type="number" min="0" max="10" step="0.1" value="${settings.retirementInflationRate}" required><small>依每筆生活費的金額基準月逐年換算。</small></label><label class="wide">賣股提領率上限<input name="withdrawalRate" type="number" min="0" max="10" step="0.1" value="${settings.retirementWithdrawalRate}" required><small>預設 0%；股息與其他收入不足時，最多可賣出資產的多少比例補足生活費。</small></label></div></details><p class="projection-auto-save" id="projectionSaveStatus" role="status">修改後會自動儲存</p></form><div id="retirementProjectionResult">${birthMonthConfirmed?retirementProjectionResult(projection):retirementBirthMonthRequiredResult()}</div></div><p class="projection-disclaimer">股息以目前持股近 12 個月已知配息推估；本試算固定推演到 100 歲，未計入稅費及市場波動，結果僅供規劃參考。</p></section>`;
 }
-const readTrendDataset=memoizeLatest((txs,caches,dateBasis,asOfDate,interval)=>{
-  const daily=enrichTrendRows(calculateTrendHistory({transactions:txs,marketCaches:caches,dateBasis,asOfDate}));
-  return {daily,month:enrichTrendRows(aggregateTrendMonths(daily))};
-});
-function trendDataset() {
-  return readTrendDataset(transactions,marketCaches,settings.dividendDateBasis,today(),gainMilestoneInterval());
-}
-function trendDailySeries() { return trendDataset().daily; }
-
-function milestoneStep(value) { if(value>=10000000)return 1000000;if(value>=1000000)return 500000;return 100000; }
-
-function gainMilestoneInterval() { return normaliseGainMilestoneInterval(settings.gainMilestoneInterval); }
-
-function enrichTrendRows(rows) {
-  if(!rows.length)return rows;
-  const maxMarket=Math.max(...rows.map(row=>row.market),0),assetStep=milestoneStep(maxMarket),gainStep=gainMilestoneInterval();
-  let lastAsset=Math.floor(rows[0].market/assetStep)*assetStep,lastGain=Math.floor(Math.max(0,rows[0].market-rows[0].external)/gainStep)*gainStep;
-  return rows.map((row,index)=>{const previous=rows[index-1],marketChange=previous?row.market-previous.market:null,marketChangeRate=previous&&previous.market?marketChange/previous.market*100:null,milestones=[];let assetLevel=index===0?lastAsset:Math.floor(row.market/assetStep)*assetStep,gainLevel=Math.floor(Math.max(0,row.market-row.external)/gainStep)*gainStep;if(assetLevel>0&&(index===0||assetLevel>lastAsset))milestones.push({kind:'asset',value:assetLevel,label:`持股資產 ${compact(assetLevel)}`});if(gainLevel>0&&(index===0||gainLevel>lastGain))milestones.push({kind:'gain',value:gainLevel,label:`累積成果 ${compact(gainLevel)}`});lastAsset=Math.max(lastAsset,assetLevel);lastGain=Math.max(lastGain,gainLevel);return {...row,marketChange,marketChangeRate,returnRate:row.external?(row.market-row.external)/row.external*100:null,milestones};});
-}
-function trendSeries() { const dataset=trendDataset();return trendState.frequency==='day'?dataset.daily:dataset.month; }
-function trendSelection(all = trendSeries()) {
-  if (!all.length) return { points:[], start:0, end:0 };
-  const max = all.length - 1;
-  if (trendState.range !== 'custom') {
-    trendState.start = 0;
-    trendState.end = max;
-    if (trendState.range !== 'all') {
-      const target = new Date(`${all[max].date}T00:00:00Z`);
-      const months = { '1m':1, '3m':3, '6m':6, '1y':12, '3y':36 }[trendState.range] || 12;
-      target.setUTCMonth(target.getUTCMonth() - months);
-      const date = target.toISOString().slice(0, 10);
-      trendState.start = Math.max(0, all.findIndex(row => row.date >= date));
-    }
-  } else if (trendState.start == null || trendState.end == null || trendState.end > max) {
-    trendState.start = 0;
-    trendState.end = max;
-  }
-  trendState.start = Math.max(0, Math.min(trendState.start, max));
-  trendState.end = Math.max(trendState.start, Math.min(trendState.end, max));
-  return { points:all.slice(trendState.start, trendState.end + 1), start:trendState.start, end:trendState.end };
-}
-function trendDateLabel(date) { const [y,m,d]=date.split('-');return trendState.frequency==='day'?`${y}/${m}/${d}`:`${y} 年 ${m} 月`; }
 function compact(value) { return `${(value/10000).toLocaleString('zh-TW',{maximumFractionDigits:value<1000000?0:1})}萬`; }
-function trendSvgLine(points,key,x,y) { return points.map((p,i)=>`${i?'L':'M'}${x(i).toFixed(1)},${y(p[key]).toFixed(1)}`).join(' '); }
-function signedMoney(value) { if(value==null)return '—';return `${value>=0?'+':'−'}${fmt(Math.abs(value))}`; }
+function gainMilestoneInterval() {
+  return normaliseGainMilestoneInterval(settings.gainMilestoneInterval);
+}
+function trendTooltipEventLimit() {
+  return normaliseTrendTooltipEventLimit(settings.trendTooltipEventLimit);
+}
+function trendDailySeries(...args) { return overviewTrend.trendDailySeries(...args); }
+function trendSeries(...args) { return overviewTrend.trendSeries(...args); }
+function trendSelection(...args) { return overviewTrend.trendSelection(...args); }
+function chartTooltip(...args) { return overviewTrend.chartTooltip(...args); }
+function trendSetFrequency(...args) { return overviewTrend.trendSetFrequency(...args); }
+function trendIndexAtClientX(...args) { return overviewTrend.trendIndexAtClientX(...args); }
+function trendChartWidth(...args) { return overviewTrend.trendChartWidth(...args); }
+function trendChartMetrics(...args) { return overviewTrend.trendChartMetrics(...args); }
+function trendAxisLabelIndexes(...args) { return overviewTrend.trendAxisLabelIndexes(...args); }
+function trendAxisDateLabel(...args) { return overviewTrend.trendAxisDateLabel(...args); }
+function trendChart() { return overviewTrend.render(); }
+function bindTrendInteractions() { overviewTrend.bind(); }
+function repaintTrend() { overviewTrend.repaint(); }
 
-function trendTooltipEventLimit() { return normaliseTrendTooltipEventLimit(settings.trendTooltipEventLimit); }
-function trendEventRows(events) { return `<div class="trend-event-list">${events.map(event=>`<div class="trend-event-row event-${event.type.toLowerCase()}"><i aria-hidden="true"></i><span><b>${escapeHtml(event.symbol)} · +${money.format(event.quantity)} 股</b><small>${escapeHtml(event.label)}${event.amount>0?` · ${fmt(event.amount)}`:''}</small></span></div>`).join('')}</div>`; }
-function trendMilestoneBanner(milestone) { return `<div class="trend-milestone-banner ${milestone.kind==='gain'?'is-gain':'is-asset'}"><span aria-hidden="true">◆</span><div><b>${milestone.kind==='gain'?'累積成果里程碑':'資產里程碑'}</b><small>${escapeHtml(milestone.label)}</small></div></div>`; }
-function visibleTrendMilestones(milestones = []) { return milestones.filter(milestone => milestone.kind==='asset' ? settings.showTotalAsset : settings.showTotalReturn); }
-function trendEventTypeVisible(type) { const marker=TREND_EVENT_MARKER_SETTINGS.find(item=>item.type===type); return marker ? settings[marker.id] ?? true : true; }
-function visibleTrendMarkerEvents(events = []) { return events.filter(event => (event.isNew && (settings.showNewStockMarker ?? true)) || trendEventTypeVisible(event.type)); }
-function trendMilestoneSummary(milestones) { const visible=visibleTrendMilestones(milestones); return visible.length ? `<div class="trend-milestones${visible.length===1?' is-single':''}">${visible.map(trendMilestoneBanner).join('')}</div>` : ''; }
-function chartTooltip(item) { const comparison=trendState.frequency==='day'?'較前一交易日':'較上月',milestones=item.milestones||[],limit=trendTooltipEventLimit(),visibleEvents=item.events.slice(0,limit),remaining=item.events.length-visibleEvents.length,eventSections=visibleEvents.length?`<div class="trend-event-section"><b>${trendState.frequency==='day'?'當日':'本月'}交易 · ${item.events.length} 筆</b>${trendEventRows(visibleEvents)}${remaining>0?`<button type="button" class="trend-tooltip-more" data-trend-detail-date="${item.date}">查看全部 ${item.events.length} 筆</button>`:''}</div>`:'';return `<b class="trend-tooltip-date">${trendDateLabel(item.date)}</b>${trendMilestoneSummary(milestones)}${(item.splits||[]).map(event=>`<p class="split-row-note">${escapeHtml(event.symbol)} · ${escapeHtml(event.type)}（股數 × ${event.ratio.toFixed(4).replace(/0+$/,'').replace(/\.$/,'')}）</p>`).join('')}<div class="trend-value-block"><span>目前持有市值${item.estimated?' · 估算':''}</span><strong>${fmt(item.market)} ${item.returnRate==null?'':`<em class="${item.returnRate>=0?'positive':'negative'}">(${fmtReturnPercent(item.returnRate)})</em>`}</strong></div><div class="trend-value-block trend-change-block"><span>${comparison}</span><strong class="${item.marketChange==null?'':item.marketChange>=0?'positive':'negative'}">${signedMoney(item.marketChange)} ${item.marketChangeRate==null?'':`<em>(${fmtReturnPercent(item.marketChangeRate)})</em>`}</strong></div>${eventSections}${item.missing.length?`<p class="trend-warning">${escapeHtml(item.missing.join('、'))} 缺少當期價格，以取得成本估算。</p>`:''}`; }
-function trendDetailDrawer(item) { if(!item)return '';const newEvents=item.events.filter(event=>event.isNew),otherEvents=item.events.filter(event=>!event.isNew);return `<aside class="trend-detail-drawer" tabindex="-1" aria-label="${trendDateLabel(item.date)}交易明細"><div class="trend-detail-heading"><div><span>交易明細</span><strong>${trendDateLabel(item.date)}</strong></div><button type="button" class="trend-detail-close" data-trend-detail-close aria-label="關閉交易明細">×</button></div>${trendMilestoneSummary(item.milestones||[])}${newEvents.length?`<div class="trend-event-section is-new"><b>首次持有${newEvents.length>1?` · ${newEvents.length} 檔`:''}</b>${trendEventRows(newEvents)}</div>`:''}${otherEvents.length?`<div class="trend-event-section"><b>${trendState.frequency==='day'?'當日':'本月'}交易 · ${otherEvents.length} 筆</b>${trendEventRows(otherEvents)}</div>`:''}${!item.events.length?`<p class="trend-detail-empty">這個日期沒有交易紀錄。</p>`:''}</aside>`; }
-function trendScale(points) { const values=points.map(row=>row.market),min=Math.min(...values),max=Math.max(...values),span=Math.max(max-min,max*.04,1),roughStep=span*1.3/4,power=10**Math.floor(Math.log10(roughStep)),normal=roughStep/power,nice=normal<=1?1:normal<=2?2:normal<=5?5:10,step=nice*power,yMin=Math.max(0,Math.floor((min-span*.15)/step)*step),yMax=Math.ceil((max+span*.15)/step)*step;return {yMin,yMax:yMax<=yMin?yMin+step*4:yMax,ticks:Array.from({length:5},(_,i)=>yMin+(yMax-yMin)*i/4)}; }
-function isCompactTrendChart() { return typeof matchMedia==='function'&&matchMedia('(max-width: 520px)').matches; }
-function trendChartWidth() {
-  const stageWidth = document.querySelector('#assetTrendChart')?.clientWidth;
-  const contentWidth = document.querySelector('#main-content')?.clientWidth;
-  return stageWidth || (contentWidth ? Math.max(240, contentWidth - 56) : 1000);
+function holdingTrendSummary(selected) {
+  const stockSymbol = selected[0].symbol;
+  const currentRows = selected.filter(row => row.date <= today());
+  const totalCost = currentRows.reduce((sum, row) => sum + cost(row), 0);
+  const quantity = currentRows.reduce((sum, row) => sum + adjustedTransactionQuantity(row), 0);
+  const price = lastPrice(stockSymbol);
+  const market = price ? quantity * Number(price.close) : totalCost;
+  const result = market - totalCost;
+  const returnClass = !price || result === 0 ? '' : result > 0 ? 'positive' : 'negative';
+  return '<div class="holding-trend-summary">'
+    + '<div><span>取得成本</span><strong>' + fmt(totalCost) + '</strong></div>'
+    + '<div><span>目前市值' + (!price ? '（成本估算）' : '') + '</span><strong>' + fmt(market) + '</strong></div>'
+    + '<div class="holding-trend-return"><span>帳面損益</span><strong class="' + returnClass + '">' + (!price ? '資料不足' : fmtSignedMoney(result)) + '</strong><small class="' + returnClass + '">' + (price ? fmtReturnPercentDetail(totalCost ? result / totalCost * 100 : null) : '') + '</small></div></div>'
+    + (price ? '<p class="holding-trend-as-of">最新報價：' + escapeHtml(price.date) + '</p>' : '')
+    + (selected.some(row => !splitCoverageComplete(cacheFor(row.symbol), marketTargetDate()))
+      ? '<p class="holding-trend-warning" role="status">分割資料尚未完整確認，股數與損益暫供參考；請同步市場資料。</p>' : '');
 }
-function trendChartMetrics(width=trendChartWidth()) { return width<=600?{left:82,right:18,top:36,bottom:48}:{left:80,right:24,top:52,bottom:55}; }
-function trendAxisDateLabel(date, points) {
-  const [year, month, day] = date.split('-');
-  const firstDate = points[0].date;
-  const lastDate = points[points.length - 1].date;
-  const duration = (Date.parse(lastDate) - Date.parse(firstDate)) / 86400000;
-  if (trendState.frequency === 'month' || duration >= 183) {
-    return trendChartWidth() < 380 ? `${year}/${month}` : `${year} 年 ${Number(month)} 月`;
-  }
-  if (firstDate.slice(0, 4) !== lastDate.slice(0, 4)) {
-    return `${year}/${month}/${day}`;
-  }
-  return `${Number(month)} 月 ${Number(day)} 日`;
+function closeHoldingTrend() {
+  if (!holdingTrend) return;
+  holdingTrend.dispose();
+  holdingTrend = null;
+  refreshHoldingTrend = null;
+  clearDialogFocus({ restoreFocus:true });
+  document.querySelector('#holdingTrendBackdrop')?.remove();
 }
-function trendAxisLabelIndexes(points) {
-  const width = trendChartWidth();
-  const { left, right } = trendChartMetrics(width);
-  const count = Math.max(2, Math.min(6, Math.floor((width - left - right) / 140)));
-  if (points.length <= count) return points.map((_, index) => index);
-  return Array.from({ length:count }, (_, index) => Math.round(index * (points.length - 1) / (count - 1)));
-}
-function compactMilestoneLabels(points) { const candidates=points.flatMap((row,index)=>visibleTrendMilestones(row.milestones).map(milestone=>({index,kind:milestone.kind}))),selected=[];['asset','gain'].forEach(kind=>{const latest=candidates.findLast(candidate=>candidate.kind===kind);if(latest)selected.push(latest);});const minGap=Math.max(2,Math.ceil(points.length/8));for(let i=candidates.length-1;i>=0&&selected.length<3;i--){const candidate=candidates[i],duplicate=selected.some(item=>item.index===candidate.index&&item.kind===candidate.kind),spaced=selected.every(item=>item.index===candidate.index||Math.abs(item.index-candidate.index)>=minGap);if(!duplicate&&spaced)selected.push(candidate);}return selected.slice(0,3); }
-function milestoneLabelIndexes(points) { const indexes=points.map((row,index)=>visibleTrendMilestones(row.milestones).length?index:null).filter(index=>index!=null);if(isCompactTrendChart())return new Set(compactMilestoneLabels(points).map(item=>item.index));if(indexes.length<=5)return new Set(indexes);const stride=Math.ceil(indexes.length/5),selected=indexes.filter((_,position)=>position%stride===0);if(selected.at(-1)!==indexes.at(-1))selected.push(indexes.at(-1));return new Set(selected); }
-function trendMarkerLabel(item, events = visibleTrendMarkerEvents(item.events)) { const newSymbols=(settings.showNewStockMarker ?? true)?events.filter(event=>event.isNew).map(event=>event.symbol):[],milestones=visibleTrendMilestones(item.milestones),parts=[];if(newSymbols.length)parts.push(`首次持有 ${newSymbols.join('、')}`);else if(events.length)parts.push(`${events.length} 筆交易`);if(milestones.length)parts.push(milestones.map(row=>row.label).join('、'));return `${trendDateLabel(item.date)}，${parts.join('，')}`; }
-function trendMarkerOverlays(points,x,y,width,height,milestoneIndexes=new Set()) { return points.map((item,index)=>{const events=visibleTrendMarkerEvents(item.events),milestones=visibleTrendMilestones(item.milestones);if(!events.length&&(!milestones.length||(isCompactTrendChart()&&!milestoneIndexes.has(index))))return '';const isNew=(settings.showNewStockMarker ?? true)&&events.some(event=>event.isNew),hasAsset=milestones.some(row=>row.kind==='asset'),hasGain=milestones.some(row=>row.kind==='gain'),kind=events.length===1?events[0].type.toLowerCase():'mixed',className=isNew?'new-stock':hasAsset?'milestone-asset':hasGain?'milestone-gain':`event-${kind}`;return `<button type="button" class="trend-event-marker ${className}" data-trend-marker="${index}" aria-label="${escapeHtml(trendMarkerLabel(item,events))}" style="left:${x(index)/width*100}%;top:${y(item.market)/height*100}%"><span class="trend-event-halo" aria-hidden="true"></span><span class="trend-event-dot" aria-hidden="true"></span></button>`;}).join(''); }
-function trendMilestoneOverlays(points,indexes,x,y,width,height) { const compact=isCompactTrendChart(),compactLabels=compact?compactMilestoneLabels(points):[],minLeft=compact?18:8,maxLeft=compact?82:92;return points.map((item,index)=>{if(!indexes.has(index))return '';const milestones=visibleTrendMilestones(item.milestones).filter(milestone=>!compact||compactLabels.some(label=>label.index===index&&label.kind===milestone.kind));return milestones.map((milestone,offset)=>{const left=Math.max(minLeft,Math.min(maxLeft,x(index)/width*100)),top=y(item.market)/height*100,mobileLane=compactLabels.findIndex(label=>label.index===index&&label.kind===milestone.kind),raise=12+(compact?mobileLane*27:offset*30);return `<span class="trend-milestone-label ${milestone.kind==='gain'?'is-gain':'is-asset'}" aria-hidden="true" style="left:${left}%;top:${top}%;transform:translate(-50%,-100%) translateY(-${raise}px)">${escapeHtml(milestone.label)}</span>`;}).join('');}).join(''); }
-function trendMonthlyDataTable(points) {
-  const months=new Map();
-  points.forEach(row=>months.set(row.date.slice(0,7),row));
-  return `<details class="chart-data-table"><summary>查看月份資產明細（${months.size} 個月）</summary><div class="chart-data-scroll" tabindex="0" role="region" aria-label="月份資產資料，可捲動"><table><caption>目前區間各月最後一筆可用資料；含估算時以文字標示。金額單位為 TWD。</caption><thead><tr><th scope="col">資料日期</th><th scope="col">持股資產</th><th scope="col">累積外部投入</th><th scope="col">資料狀態</th></tr></thead><tbody>${[...months.values()].map(row=>`<tr><th scope="row">${escapeHtml(row.date)}</th><td>${fmt(row.market)}</td><td>${fmt(row.external)}</td><td>${row.estimated?'含成本估算':'依市場價格'}</td></tr>`).join('')}</tbody></table></div></details>`;
-}
-function trendChart() {
-  const all=trendSeries(),selected=trendSelection(all),points=selected.points;
-  if(!points.length)return `<p class="trend-empty">同步市場資料後，即可建立資產時間序列。</p>`;
-  const width=trendChartWidth(),height=340,{left,right,top,bottom}=trendChartMetrics(width),chartWidth=width-left-right,chartHeight=height-top-bottom,{yMin,yMax,ticks}=trendScale(points),x=i=>left+i*chartWidth/Math.max(1,points.length-1),y=v=>top+chartHeight-(v-yMin)/(yMax-yMin)*chartHeight,labels=trendAxisLabelIndexes(points),miniMin=Math.min(...all.map(row=>row.market)),miniMax=Math.max(...all.map(row=>row.market)),miniSpan=Math.max(1,miniMax-miniMin),mini=all.map((p,i)=>`${i?'L':'M'}${10+i*980/Math.max(1,all.length-1)},${36-(p.market-miniMin)/miniSpan*28}`).join(' '),startPct=selected.start/Math.max(1,all.length-1)*100,endPct=selected.end/Math.max(1,all.length-1)*100,selectionPct=endPct-startPct,compactSelection=selectionPct<4,startDate=trendDateLabel(all[selected.start].date),endDate=trendDateLabel(all[selected.end].date),labelIndexes=milestoneLabelIndexes(points),handleAria=(edge,date,index)=>`class="navigator-handle ${edge}" data-navigator-handle="${edge}" role="slider" aria-label="調整${edge==='start'?'開始':'結束'}日期，目前 ${date}" aria-valuemin="0" aria-valuemax="${all.length-1}" aria-valuenow="${index}" aria-valuetext="${date}" title="${date}；可拖曳或使用方向鍵微調"`,markers=trendMarkerOverlays(points,x,y,width,height,labelIndexes),milestoneLabels=trendMilestoneOverlays(points,labelIndexes,x,y,width,height);
-  const detailItem=trendDetailDate?points.find(item=>item.date===trendDetailDate):null;
-  return `<div class="trend-controls"><div class="segmented" role="group" aria-label="資料頻率"><button aria-pressed="${trendState.frequency==='month'}" data-trend-frequency="month" class="${trendState.frequency==='month'?'selected':''}">每月</button><button aria-pressed="${trendState.frequency==='day'}" data-trend-frequency="day" class="${trendState.frequency==='day'?'selected':''}">每日</button></div><div class="range trend-ranges" role="group" aria-label="顯示區間">${[['1m','1個月'],['3m','3個月'],['6m','半年'],['1y','1年'],['3y','3年'],['all','全部']].map(([key,label])=>`<button aria-pressed="${trendState.range===key}" data-trend-range="${key}" class="${trendState.range===key?'selected':''}">${label}</button>`).join('')}</div></div><p class="mobile-chart-hint">點按曲線查看明細；拖曳下方把手調整日期區間</p><div class="trend-workspace${detailItem?' has-detail':''}"><div class="trend-chart-core"><div class="trend-chart-visual"><div class="asset-chart-stage" id="assetTrendChart" tabindex="0" aria-label="持股資產走勢圖，可使用左右方向鍵查看各日期"><svg viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" aria-hidden="true"><defs><linearGradient id="trendFill" x1="0" x2="0" y1="0" y2="1"><stop stop-color="#0f91b8" stop-opacity=".2"/><stop offset="1" stop-color="#0f91b8" stop-opacity=".015"/></linearGradient></defs>${ticks.map(t=>`<line x1="${left}" x2="${width-right}" y1="${y(t)}" y2="${y(t)}" class="chart-grid"/>`).join('')}<path d="${trendSvgLine(points,'market',x,y)} L${x(points.length-1)},${top+chartHeight} L${x(0)},${top+chartHeight} Z" fill="url(#trendFill)"/><path d="${trendSvgLine(points,'market',x,y)}" class="trend-market-line"/><g id="trendFocus"></g></svg>${markers}${milestoneLabels}<span class="trend-focus-dot" id="trendFocusDot" aria-hidden="true"></span><div class="chart-y-axis" aria-hidden="true">${ticks.map(t=>`<span style="left:${left/width*100}%;top:${y(t)/height*100}%">${compact(t)}</span>`).join('')}</div><div class="chart-x-axis" aria-hidden="true">${labels.map((i,labelIndex)=>`<span class="${labelIndex===0?'is-first':labelIndex===labels.length-1?'is-last':''}" style="left:${x(i)/width*100}%">${trendAxisDateLabel(points[i].date, points)}</span>`).join('')}</div></div><div class="trend-tooltip" id="trendTooltip" role="status" aria-live="polite"></div></div><div class="trend-navigator-wrap"><div class="trend-navigator-dates"><span data-navigator-date="start">${startDate}</span><span data-navigator-date="end">${endDate}</span></div><div class="trend-navigator" id="trendNavigator" aria-label="拖曳以選擇圖表日期區間"><svg viewBox="0 0 1000 42" preserveAspectRatio="none"><path d="${mini}" class="navigator-line"/></svg><div class="navigator-selection${compactSelection?' compact':''}" style="left:${startPct}%;right:${100-endPct}%"><button ${handleAria('start',startDate,selected.start)}></button><button ${handleAria('end',endDate,selected.end)}></button></div></div></div></div>${trendDetailDrawer(detailItem)}</div>${trendMonthlyDataTable(points)}`;
-}
-function trendIndexAtClientX(clientX,rect,length,viewWidth=trendChartWidth()) { if(length<=1)return 0;const {left,right}=trendChartMetrics(viewWidth),chartX=(clientX-rect.left)/Math.max(1,rect.width)*viewWidth,pointGap=(viewWidth-left-right)/(length-1),nearest=Math.round((chartX-left)/pointGap);return Math.max(0,Math.min(length-1,nearest)); }
-function trendIndexAtStageClientX(stage,clientX,length) { const svg=stage.querySelector('svg'),rect=svg?.getBoundingClientRect()||stage.getBoundingClientRect(),viewWidth=svg?.viewBox?.baseVal?.width||trendChartWidth();return trendIndexAtClientX(clientX,rect,length,viewWidth); }
-function updateTrendFocus(index) { const points=trendSelection().points,item=points[index],stage=document.querySelector('#assetTrendChart');if(!item||!stage)return;const svg=stage.querySelector('svg'),width=svg?.viewBox?.baseVal?.width||trendChartWidth(),height=svg?.viewBox?.baseVal?.height||340,{left,right,top,bottom}=trendChartMetrics(width),chartWidth=width-left-right,chartHeight=height-top-bottom,{yMin,yMax}=trendScale(points),x=left+index*chartWidth/Math.max(1,points.length-1),y=value=>top+chartHeight-(value-yMin)/(yMax-yMin)*chartHeight,focus=document.querySelector('#trendFocus'),focusDot=document.querySelector('#trendFocusDot'),tip=document.querySelector('#trendTooltip');if(!focus||!focusDot||!tip)return;stage.dataset.focusIndex=index;stage.querySelectorAll('[data-trend-marker]').forEach(marker=>marker.classList.toggle('is-active',Number(marker.dataset.trendMarker)===index));focus.innerHTML=`<line x1="${x}" x2="${x}" y1="${top}" y2="${top+chartHeight}" class="trend-crosshair"/>`;focusDot.style.left=`${x/width*100}%`;focusDot.style.top=`${y(item.market)/height*100}%`;focusDot.classList.add('show');tip.innerHTML=chartTooltip(item);tip.classList.add('show');const rect=stage.getBoundingClientRect(),anchor=x/width*rect.width;tip.style.left=`${anchor}px`;tip.classList.toggle('right',anchor>rect.width*.62); }
-function trendSetRange(range) {
-  trendState.range = range;
-  trendSelection();
-  render();
-}
-function trendSetFrequency(frequency) { trendState.frequency=frequency;trendState.start=null;trendState.end=null;trendSetRange(frequency==='day'?'1y':'all'); }
-function indexForNavigator(clientX,rect,length) { return Math.max(0,Math.min(length-1,Math.round((clientX-rect.left)/rect.width*(length-1)))); }
-function trendNavigatorDragMode({clientX,selectionRect,handleEdge,compact,mobile=isCompactTrendChart()}) { if(!selectionRect)return 'jump';if(mobile){const edgeZone=Math.min(18,selectionRect.width/2);if(clientX<=selectionRect.left+edgeZone)return 'start';if(clientX>=selectionRect.right-edgeZone)return 'end';return 'move';}if(handleEdge&&compact)return clientX<(selectionRect.left+selectionRect.right)/2?'start':'end';return handleEdge||'move'; }
-function repaintTrend() { const mount=document.querySelector('#trendChartMount');if(mount){mount.innerHTML=trendChart();bindTrendInteractions();} }
-function previewTrendNavigator(navigator,all) { const selected=trendSelection(all),denominator=Math.max(1,all.length-1),startPct=selected.start/denominator*100,endPct=selected.end/denominator*100,selection=navigator.querySelector('.navigator-selection'),startDate=trendDateLabel(all[selected.start].date),endDate=trendDateLabel(all[selected.end].date);if(selection){selection.style.left=`${startPct}%`;selection.style.right=`${100-endPct}%`;selection.classList.toggle('compact',endPct-startPct<4);}const startLabel=document.querySelector('[data-navigator-date="start"]'),endLabel=document.querySelector('[data-navigator-date="end"]'),rangeLabel=document.querySelector('[data-navigator-range-label]');if(startLabel)startLabel.textContent=startDate;if(endLabel)endLabel.textContent=endDate;if(rangeLabel)rangeLabel.textContent='自訂區間';[['start',selected.start,startDate],['end',selected.end,endDate]].forEach(([edge,index,date])=>{const handle=navigator.querySelector(`[data-navigator-handle="${edge}"]`);if(handle){handle.setAttribute('aria-valuenow',index);handle.setAttribute('aria-valuetext',date);handle.setAttribute('aria-label',`調整${edge==='start'?'開始':'結束'}日期，目前 ${date}`);handle.title=`${date}；可拖曳或使用方向鍵微調`;}}); }
-let trendPreviewFrame=null;
-function previewTrendChart() { if(trendPreviewFrame!=null)return;trendPreviewFrame=requestAnimationFrame(()=>{trendPreviewFrame=null;const template=document.createElement('template');template.innerHTML=trendChart();const currentStage=document.querySelector('#assetTrendChart'),nextStage=template.content.querySelector('#assetTrendChart');if(currentStage&&nextStage)currentStage.replaceWith(nextStage);}); }
-function bindTrendInteractions() {
-  document.querySelectorAll('[data-trend-frequency]').forEach(button=>button.onclick=()=>trendSetFrequency(button.dataset.trendFrequency));
-  document.querySelectorAll('[data-trend-range]').forEach(button=>button.onclick=()=>trendSetRange(button.dataset.trendRange));
-  const stage=document.querySelector('#assetTrendChart');
-  if(stage){
-    let pointerFrame=null,pointerX=null;
-    stage.addEventListener('pointermove',event=>{if(event.target.closest?.('[data-trend-detail-date]'))return;pointerX=event.clientX;if(pointerFrame!==null)return;pointerFrame=requestAnimationFrame(()=>{pointerFrame=null;if(!stage.isConnected)return;const points=trendSelection().points,index=trendIndexAtStageClientX(stage,pointerX,points.length);if(Number(stage.dataset.focusIndex)!==index||!document.querySelector('#trendTooltip')?.classList.contains('show'))updateTrendFocus(index);});});
-    stage.addEventListener('pointerdown',event=>{if(event.target.closest?.('[data-trend-marker]'))return;const points=trendSelection().points,index=trendIndexAtStageClientX(stage,event.clientX,points.length);updateTrendFocus(index);});
-    stage.addEventListener('click',event=>{const more=event.target.closest?.('[data-trend-detail-date]');if(more)openTrendDetailByDate(more.dataset.trendDetailDate);});
-    stage.addEventListener('keydown',event=>{const points=trendSelection().points;if(!['ArrowLeft','ArrowRight','Home','End'].includes(event.key)||!points.length)return;event.preventDefault();const current=Number(stage.dataset.focusIndex ?? points.length-1),next=event.key==='Home'?0:event.key==='End'?points.length-1:Math.max(0,Math.min(points.length-1,current+(event.key==='ArrowLeft'?-1:1)));updateTrendFocus(next);});
-    stage.addEventListener('pointerleave',()=>{if(pointerFrame!==null){cancelAnimationFrame(pointerFrame);pointerFrame=null;}if(typeof matchMedia==='function'&&!matchMedia('(hover: hover)').matches)return;document.querySelector('#trendTooltip')?.classList.remove('show');document.querySelector('#trendFocusDot')?.classList.remove('show');stage.querySelectorAll('[data-trend-marker].is-active').forEach(marker=>marker.classList.remove('is-active'));});
-    stage.querySelectorAll('[data-trend-marker]').forEach(marker=>{
-      const show=()=>updateTrendFocus(Number(marker.dataset.trendMarker));
-      marker.addEventListener('focus',show);
-      marker.addEventListener('click',event=>{const points=trendSelection().points,index=event.clientX||event.clientY?trendIndexAtStageClientX(stage,event.clientX,points.length):Number(marker.dataset.trendMarker);openTrendDetail(index);});
-      marker.addEventListener('keydown',event=>{if(event.key==='Enter'||event.key===' '){event.preventDefault();openTrendDetail(marker.dataset.trendMarker);}});
-    });
-  }
-  document.querySelector('#trendTooltip')?.addEventListener('click',event=>{const more=event.target.closest?.('[data-trend-detail-date]');if(more)openTrendDetailByDate(more.dataset.trendDetailDate);});
-  document.querySelector('[data-trend-detail-close]')?.addEventListener('click',()=>{trendDetailDate=null;repaintTrend();});
-  const navigator=document.querySelector('#trendNavigator');
-  if(!navigator)return;
-  navigator.querySelectorAll('[data-navigator-handle]').forEach(handle=>handle.addEventListener('keydown',event=>{
-    const edge=handle.dataset.navigatorHandle,all=trendSeries(),selected=trendSelection(all),step=event.shiftKey?10:1;
-    let next=edge==='start'?selected.start:selected.end;
-    if(event.key==='ArrowLeft')next-=step;
-    else if(event.key==='ArrowRight')next+=step;
-    else if(event.key==='Home')next=edge==='start'?0:selected.start+1;
-    else if(event.key==='End')next=edge==='start'?selected.end-1:all.length-1;
-    else return;
-    event.preventDefault();
-    if(edge==='start')trendState.start=Math.max(0,Math.min(next,selected.end-1));
-    else trendState.end=Math.min(all.length-1,Math.max(next,selected.start+1));
-    trendState.range='custom';
-    repaintTrend();
-    requestAnimationFrame(()=>document.querySelector(`[data-navigator-handle="${edge}"]`)?.focus());
-  }));
-  navigator.addEventListener('pointerdown',event=>{
-    const all=trendSeries(),selected=trendSelection(all),rect=navigator.getBoundingClientRect(),target=event.target,handle=target.closest?.('[data-navigator-handle]'),selection=target.closest?.('.navigator-selection'),selectionRect=selection?.getBoundingClientRect(),mode=trendNavigatorDragMode({clientX:event.clientX,selectionRect,handleEdge:handle?.dataset.navigatorHandle,compact:selection?.classList.contains('compact')}),origin=indexForNavigator(event.clientX,rect,all.length),start=selected.start,end=selected.end;
-    if(mode==='jump'){
-      const span=end-start;
-      trendState.start=Math.max(0,Math.min(all.length-1-span,origin-Math.round(span/2)));
-      trendState.end=trendState.start+span;
-      trendState.range='custom';
-      repaintTrend();
-      return;
-    }
-    const move=e=>{
-      const idx=indexForNavigator(e.clientX,rect,all.length),delta=idx-origin;
-      if(mode==='start'){trendState.start=Math.max(0,Math.min(idx,end-1));trendState.end=end;}
-      else if(mode==='end'){trendState.start=start;trendState.end=Math.min(all.length-1,Math.max(idx,start+1));}
-      else{const span=end-start;trendState.start=Math.max(0,Math.min(all.length-1-span,start+delta));trendState.end=trendState.start+span;}
-      trendState.range='custom';
-      previewTrendNavigator(navigator,all);
-      previewTrendChart();
-    };
-    const up=()=>{document.removeEventListener('pointermove',move);document.removeEventListener('pointerup',up);document.removeEventListener('pointercancel',up);if(trendPreviewFrame!=null){cancelAnimationFrame(trendPreviewFrame);trendPreviewFrame=null;}repaintTrend();};
-    document.addEventListener('pointermove',move);
-    document.addEventListener('pointerup',up);
-    document.addEventListener('pointercancel',up);
-    event.preventDefault();
+function openHoldingTrend(trigger) {
+  closeHoldingTrend();
+  const transactionId = trigger.dataset.trendTransaction;
+  const symbol = trigger.dataset.trendSymbol;
+  const selected = transactions.filter(row => transactionId ? row.id === transactionId : row.symbol === symbol);
+  if (!selected.length) return;
+  holdingTrendTrigger = trigger;
+  const stockSymbol = selected[0].symbol;
+  const name = cacheFor(stockSymbol)?.name || '';
+  const title = stockSymbol + (name ? ' · ' + name : '') + (transactionId ? ' 單筆交易走勢' : ' 持股走勢');
+  const note = transactionId
+    ? selected[0].date + ' · ' + (ACQUISITIONS[selected[0].acquisitionType] || '持股') + ' · 原始 ' + fmtShares(selected[0].quantity) + ' 股；後續其他交易不計入此曲線。'
+    : '納入這檔股票的全部 ' + selected.length + ' 筆交易。';
+  const backdrop = document.createElement('div');
+  backdrop.id = 'holdingTrendBackdrop';
+  backdrop.className = 'modal-backdrop';
+  backdrop.innerHTML = '<section class="holding-trend-modal panel" role="dialog" aria-modal="true" aria-labelledby="holdingTrendTitle">'
+    + '<div class="modal-header"><h2 id="holdingTrendTitle">' + escapeHtml(title) + '</h2><button type="button" class="modal-close" data-close-holding-trend aria-label="關閉走勢">×</button></div>'
+    + '<div class="holding-trend-body"><p class="holding-trend-context">' + escapeHtml(note) + '</p><div id="holdingTrendSummary"></div>'
+    + '<div class="holding-trend-legend" aria-label="圖例"><span><i aria-hidden="true"></i>持有市值</span><span><i class="is-cost" aria-hidden="true"></i>取得成本</span></div>'
+    + '<div id="holdingTrendMount"></div>'
+    + '<details class="holding-trend-method"><summary>計算方式與資料說明</summary><p>現金股息不計入帳面損益；單筆不自動歸入後續再投入或配股。股數與價格依已知分割／反分割及面額變更調整，原始交易保留；請勿再以「配股」重複補入分割股數。反分割零股採等值估算，未計現金結算。缺少價格時以取得成本估算。</p></details></div></section>';
+  root.append(backdrop);
+  holdingTrend = createAssetTrendChart({
+    getTransactions:() => selected, getMarketCaches:() => marketCaches,
+    getSettings:() => settings, getDate:today,
+    getMount:() => document.querySelector('#holdingTrendMount'),
+    prefix:'holding-', showCost:true,
+  });
+  const mount = document.querySelector('#holdingTrendMount');
+  mount.innerHTML = holdingTrend.render();
+  holdingTrend.bind();
+  refreshHoldingTrend = () => {
+    const summary = document.querySelector('#holdingTrendSummary');
+    if (summary) summary.innerHTML = holdingTrendSummary(selected);
+    holdingTrend.repaint();
+  };
+  document.querySelector('#holdingTrendSummary').innerHTML = holdingTrendSummary(selected);
+  backdrop.querySelector('[data-close-holding-trend]').addEventListener('click', closeHoldingTrend);
+  backdrop.addEventListener('click', event => {
+    if (event.target === backdrop) closeHoldingTrend();
+  });
+  bindDialogFocus(backdrop.querySelector('[role="dialog"]'), {
+    onClose:closeHoldingTrend, initialFocus:'[data-close-holding-trend]',
+    returnFocus:() => {
+      if (holdingTrendTrigger?.isConnected) holdingTrendTrigger.focus({ preventScroll:true });
+    },
   });
 }
-function openTrendDetail(index) { const item=trendSelection().points[Number(index)];if(item)openTrendDetailByDate(item.date); }
-function openTrendDetailByDate(date) { trendDetailDate=date;repaintTrend();requestAnimationFrame(()=>document.querySelector('.trend-detail-drawer')?.focus()); }
 
 function emptyState() { return `<section class="empty"><div class="empty-icon" aria-hidden="true"></div><p class="eyebrow">從第一筆紀錄開始</p><h2>建立你的退休現金流地圖</h2><p>匯入 CSV 交易紀錄後，系統會在此瀏覽器計算持股、成本與退休進度。</p><div><button class="primary" id="emptyImport">匯入 CSV</button><a class="secondary download-link" href="./my-stock-transactions.csv" download="my-stock-transactions.csv">下載持股範例</a></div><small>範例含 11 筆交易，支援自行買進、定期定額、股息再投入與配股</small></section>`; }
 function adjustedTransactionQuantity(transaction) {
@@ -962,12 +885,12 @@ function transactionsPage() {
         <span class="group-metric group-return"><small>未實現損益</small><b class="return-amount ${unrealized.amount == null ? '' : unrealized.amount >= 0 ? 'positive' : 'negative'}">${fmtSignedMoney(unrealized.amount)}</b><small class="return-percent ${unrealized.percent == null ? '' : unrealized.percent >= 0 ? 'positive' : 'negative'}">${fmtReturnPercentDetail(unrealized.percent)}</small></span>
         <span class="group-count">${group.rows.length} 筆 <i>⌄</i></span>
       </summary>
-      <div class="group-actions"><p>共 ${money.format(group.rows.length)} 筆 ${escapeHtml(group.symbol)} 交易紀錄</p><button type="button" class="danger group-delete" data-delete-group="${escapeHtml(group.symbol)}" data-group-count="${group.rows.length}" aria-label="刪除 ${escapeHtml(group.symbol)} 群組的全部 ${group.rows.length} 筆交易">刪除整個群組</button></div>
+      <div class="group-actions"><button type="button" class="secondary" data-trend-symbol="${escapeHtml(group.symbol)}">查看持股走勢</button><p>共 ${money.format(group.rows.length)} 筆 ${escapeHtml(group.symbol)} 交易紀錄</p><button type="button" class="danger group-delete" data-delete-group="${escapeHtml(group.symbol)}" data-group-count="${group.rows.length}" aria-label="刪除 ${escapeHtml(group.symbol)} 群組的全部 ${group.rows.length} 筆交易">刪除整個群組</button></div>
       <div class="group-table-wrap"><table><thead><tr><th>日期</th><th>取得方式</th><th>股數</th><th>成交價</th><th>手續費</th><th>成本</th><th>未實現損益</th><th>操作</th></tr></thead><tbody>${group.rows.map(t => {
         const rowReturn = transactionReturn(t);
         const returnClass = rowReturn.amount == null ? '' : rowReturn.amount >= 0 ? 'positive' : 'negative';
         const label = `${escapeHtml(group.symbol)} 的${escapeHtml(ACQUISITIONS[t.acquisitionType] || '持股')}紀錄`;
-        return `<tr><td>${escapeHtml(t.date)}</td><td><span class="tag">${escapeHtml(ACQUISITIONS[t.acquisitionType] || '持股')}</span></td><td>${money.format(t.quantity)}${adjustedTransactionQuantity(t)!==Number(t.quantity)?`<small class="split-row-note">調整後 ${fmtShares(adjustedTransactionQuantity(t))} 股</small>`:""}</td><td>${t.price == null ? '—' : fmtPerShare(t.price)}</td><td>${Number(t.fee) ? fmt(t.fee) : '—'}</td><td>${fmt(cost(t))}</td><td class="return-value ${returnClass}"><b>${fmtSignedMoney(rowReturn.amount)}</b><small>${fmtReturnPercentDetail(rowReturn.percent)}</small></td><td><div class="row-actions"><button type="button" class="icon-btn edit" data-edit-transaction="${t.id}" aria-label="編輯 ${label}" title="編輯交易"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 20 4.2-1 10.9-10.9a2.1 2.1 0 0 0-3-3L5.2 16 4 20Z"/><path d="m14.8 6.3 3 3"/></svg></button><button type="button" class="icon-btn delete" data-id="${t.id}" aria-label="刪除 ${label}" title="刪除交易"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3m3 0-1 13H7L6 7m4 4v5m4-5v5"/></svg></button></div></td></tr>`;
+        return `<tr><td>${escapeHtml(t.date)}</td><td><span class="tag">${escapeHtml(ACQUISITIONS[t.acquisitionType] || '持股')}</span></td><td>${money.format(t.quantity)}${adjustedTransactionQuantity(t)!==Number(t.quantity)?`<small class="split-row-note">調整後 ${fmtShares(adjustedTransactionQuantity(t))} 股</small>`:""}</td><td>${t.price == null ? '—' : fmtPerShare(t.price)}</td><td>${Number(t.fee) ? fmt(t.fee) : '—'}</td><td>${fmt(cost(t))}</td><td class="return-value ${returnClass}"><b>${fmtSignedMoney(rowReturn.amount)}</b><small>${fmtReturnPercentDetail(rowReturn.percent)}</small></td><td><div class="row-actions"><button type="button" class="secondary" data-trend-transaction="${escapeHtml(t.id)}" aria-label="查看 ${label}走勢">走勢</button><button type="button" class="icon-btn edit" data-edit-transaction="${t.id}" aria-label="編輯 ${label}" title="編輯交易"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 20 4.2-1 10.9-10.9a2.1 2.1 0 0 0-3-3L5.2 16 4 20Z"/><path d="m14.8 6.3 3 3"/></svg></button><button type="button" class="icon-btn delete" data-id="${t.id}" aria-label="刪除 ${label}" title="刪除交易"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3m3 0-1 13H7L6 7m4 4v5m4-5v5"/></svg></button></div></td></tr>`;
       }).join('')}</tbody></table></div>
     </details>`;
   }).join('')}</div></section>` : `${undo}<section class="panel transactions-panel"><div class="panel-title"><div><h2>交易紀錄</h2><p>新增一筆交易，或一次匯入既有紀錄。</p></div>${actions}</div><div class="empty compact"><div class="empty-icon" aria-hidden="true"></div><h2>尚未有交易紀錄</h2><p>新增第一筆交易，或匯入既有 CSV，開始建立持股與成本紀錄。</p><div><button class="primary" data-add-transaction>新增第一筆交易</button><button class="secondary" data-transaction-import>匯入 CSV</button></div></div></section>`;
@@ -1504,6 +1427,9 @@ function bindOverviewBirthMonth() {
   form.addEventListener('submit',event=>{event.preventDefault();void update();});
 }
 function bind() {
+  document.querySelectorAll('[data-trend-symbol], [data-trend-transaction]').forEach(button => {
+    button.addEventListener('click', () => openHoldingTrend(button));
+  });
   if (page === 'stock-comparison') comparisonPage.bind();
   document.querySelectorAll('select, textarea, input:not([type="checkbox"]):not([type="radio"]):not([type="file"]):not([type="hidden"]):not([type="range"]):not([type="button"]):not([type="submit"]):not([type="reset"])').forEach(control => {
     control.classList.add('form-field');
@@ -1717,10 +1643,10 @@ window.addEventListener('online',()=>{marketCalendarRetryAfter=null;void maybeAu
 window.addEventListener('hashchange',syncPageFromHash);
 let trendResizeFrame = null;
 window.addEventListener('resize', () => {
-  if (!document.querySelector('#assetTrendChart') || trendResizeFrame !== null) return;
+  if ((!document.querySelector('#assetTrendChart') && !holdingTrend) || trendResizeFrame !== null) return;
   trendResizeFrame = requestAnimationFrame(() => {
     trendResizeFrame = null;
-    if (dataMaintenance || !document.querySelector('#assetTrendChart')) return;
+    if (dataMaintenance || (!document.querySelector('#assetTrendChart') && !holdingTrend)) return;
     const focusedId = document.activeElement?.id;
     repaintTrend();
     if (focusedId) document.getElementById(focusedId)?.focus({ preventScroll:true });

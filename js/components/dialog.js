@@ -12,13 +12,14 @@ export function bindDialogFocus(dialog, { onClose, initialFocus, returnFocus } =
   const background = document.querySelector('.shell');
   const previousInert = background?.inert ?? false;
   if (background) background.inert = true;
+  document.documentElement?.classList.add('dialog-open');
   document.body?.classList.add('dialog-open');
   dialog.tabIndex = -1;
   const controls = () => [...dialog.querySelectorAll('button, a[href], input, select, textarea, [tabindex]')]
     .filter(element => !element.disabled && element.tabIndex >= 0 && !element.closest('[hidden], [inert]') && element.getClientRects().length > 0);
   const focusInitial = () => {
     if (!dialog.isConnected || dialog.contains(document.activeElement)) return;
-    ((initialFocus ? dialog.querySelector(initialFocus) : null) || controls()[0] || dialog).focus();
+    ((initialFocus ? dialog.querySelector(initialFocus) : null) || controls()[0] || dialog).focus({ preventScroll:true });
   };
   const onKeyDown = event => {
     // A combobox consumes Escape to close its suggestions before its dialog.
@@ -38,6 +39,7 @@ export function bindDialogFocus(dialog, { onClose, initialFocus, returnFocus } =
   activeDialogCleanup = restoreFocus => {
     dialog.removeEventListener('keydown', onKeyDown);
     if (background) background.inert = previousInert;
+    document.documentElement?.classList.remove('dialog-open');
     document.body?.classList.remove('dialog-open');
     if (restoreFocus && returnFocus) requestAnimationFrame(returnFocus);
   };

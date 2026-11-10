@@ -1503,7 +1503,9 @@ td small { display: block; margin-top: 2px; color: var(--subtle); font-size: .75
 .trend-milestones .trend-milestone-banner.is-gain small { color: #334155; }
 .trend-detail-close { width: 44px; height: 44px; flex: 0 0 44px; }
 .trend-tooltip-more { min-height: 44px; }
-body.dialog-open { overflow: hidden; }
+/* Keep body out of the sticky sidebar's scrolling ancestors. */
+html.dialog-open { overflow: hidden; overscroll-behavior: none; }
+body.dialog-open { overscroll-behavior: none; }
 .chart-data-table { margin-top: 18px; border-top: 1px solid var(--line); }
 .chart-data-table > summary { min-height: 44px; padding: 12px 0; color: var(--blue-strong); font-size: .875rem; font-weight: 700; cursor: pointer; }
 .chart-data-scroll { max-height: 360px; overflow: auto; border: 1px solid var(--line); border-radius: 9px; }
@@ -1616,4 +1618,110 @@ body.dialog-open { overflow: hidden; }
     gap: 12px;
     margin: 0 0 20px;
   }
+}
+
+/* One scroll owner: the dialog body. Keep the close action outside it. */
+#holdingTrendBackdrop {
+  height: 100dvh;
+  min-height: 0;
+  align-items: center;
+  overflow: hidden;
+}
+.holding-trend-modal {
+  display: flex;
+  flex-direction: column;
+  width: min(1100px, 100%);
+  min-width: 0;
+  max-height: 100%;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+}
+.holding-trend-modal .modal-header {
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 16px;
+  margin: 0;
+  padding: 14px 20px;
+  border-bottom: 1px solid var(--line);
+}
+.holding-trend-modal h2 { min-width: 0; margin: 0; font-size: 1rem; overflow-wrap: anywhere; }
+.holding-trend-modal .modal-close { flex: 0 0 44px; }
+.holding-trend-body {
+  min-height: 0;
+  min-width: 0;
+  padding: 14px 20px 20px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+.holding-trend-context { margin: 0 0 12px; color: var(--muted); font-size: .8125rem; line-height: 1.5; overflow-wrap: anywhere; }
+.holding-trend-summary { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 12px; padding: 14px; background: #f7faff; border: 1px solid var(--line); border-radius: 10px; }
+.holding-trend-summary > div { display: flex; flex-wrap: wrap; align-content: start; align-items: baseline; gap: 4px 8px; min-width: 0; }
+.holding-trend-summary span { flex-basis: 100%; color: var(--muted); font-size: .8125rem; }
+.holding-trend-summary strong { font-size: clamp(1rem,2vw,1.4rem); overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+.holding-trend-summary small { font-size: .75rem; }
+.holding-trend-as-of { margin: 8px 0; color: var(--muted); font-size: .75rem; }
+.holding-trend-warning { margin: 8px 0; padding: 8px 10px; color: #713f12; background: #fffbeb; border-radius: 6px; font-size: .8125rem; }
+.holding-trend-legend { display: flex; flex-wrap: wrap; gap: 16px; margin: 12px 0 0; color: var(--muted); font-size: .8125rem; }
+.holding-trend-legend span { display: inline-flex; align-items: center; gap: 6px; }
+.holding-trend-legend i { width: 20px; border-top: 2px solid #0f91b8; }
+.holding-trend-legend .is-cost { border-top: 2px dashed #a76b22; }
+.trend-cost-line { fill: none; stroke: #a76b22; stroke-width: 2; stroke-dasharray: 6 4; }
+#holdingTrendMount, .holding-trend-modal .trend-chart-visual { min-width: 0; }
+.holding-trend-modal .trend-controls { flex-wrap: wrap; }
+.holding-trend-modal .trend-ranges { display: flex; flex-wrap: wrap; width: auto; max-width: 100%; overflow: visible; }
+.holding-trend-modal .asset-chart-stage { height: clamp(220px,35dvh,320px); }
+.holding-trend-modal .trend-navigator-wrap { margin-inline: 24px; }
+.holding-trend-modal .trend-detail-drawer { max-height: none; overflow: visible; }
+.holding-trend-modal .chart-data-scroll { max-height: none; overflow: visible; }
+.holding-trend-modal .chart-data-table table { min-width: 0; table-layout: fixed; }
+.holding-trend-modal .chart-data-table th, .holding-trend-modal .chart-data-table td { padding: 9px 6px; white-space: normal; overflow-wrap: anywhere; }
+.holding-trend-modal .chart-data-table thead th { position: static; }
+.holding-trend-method { margin-top: 12px; border-top: 1px solid var(--line); color: var(--muted); font-size: .8125rem; }
+.holding-trend-method summary { min-height: 44px; padding: 12px 0; cursor: pointer; font-weight: 650; }
+.holding-trend-method p { margin: 0 0 8px; line-height: 1.65; }
+@media (max-width: 520px) {
+  .holding-trend-modal .modal-header { padding: 10px 12px; }
+  .holding-trend-body { padding: 12px; }
+  .holding-trend-summary { padding: 10px; gap: 8px; }
+  .holding-trend-summary span { font-size: .75rem; }
+  .holding-trend-modal .trend-workspace.has-detail { grid-template-columns: minmax(0,1fr); }
+}
+
+/* Touch layouts keep details in the document flow, including landscape phones. */
+@media (max-width: 800px), (pointer: coarse) {
+  .holding-trend-modal .trend-workspace.has-detail { grid-template-columns: minmax(0,1fr); }
+  .holding-trend-modal .trend-tooltip {
+    position: relative;
+    display: none;
+    top: auto;
+    left: auto !important;
+    width: 100%;
+    max-width: 100%;
+    margin-top: 8px;
+    opacity: 1;
+    pointer-events: auto;
+    transform: none;
+  }
+  .holding-trend-modal .trend-tooltip.show { display: block; }
+  .holding-trend-modal .trend-tooltip.right { transform: none; }
+  .holding-trend-modal .trend-controls { display: grid; grid-template-columns: minmax(0,1fr); }
+  .holding-trend-modal .trend-ranges { display: grid; width: 100%; grid-template-columns: repeat(3,minmax(0,1fr)); }
+  .holding-trend-modal .trend-ranges button { min-width: 0; min-height: 44px; white-space: normal; overflow-wrap: anywhere; }
+}
+@media (max-width: 520px) {
+  #holdingTrendBackdrop {
+    padding: max(8px,env(safe-area-inset-top)) max(8px,env(safe-area-inset-right)) max(8px,env(safe-area-inset-bottom)) max(8px,env(safe-area-inset-left));
+  }
+  .holding-trend-modal .modal-header { align-items: flex-start; }
+  .holding-trend-summary { grid-template-columns: repeat(2,minmax(0,1fr)); }
+  .holding-trend-summary .holding-trend-return { grid-column: 1 / -1; }
+}
+@media (max-height: 520px) and (orientation: landscape) {
+  #holdingTrendBackdrop {
+    padding: max(6px,env(safe-area-inset-top)) max(12px,env(safe-area-inset-right)) max(6px,env(safe-area-inset-bottom)) max(12px,env(safe-area-inset-left));
+  }
+  .holding-trend-modal .modal-header { padding-block: 8px; }
 }

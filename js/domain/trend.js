@@ -83,7 +83,7 @@ export function calculateTrendHistory({ transactions, marketCaches, dateBasis, a
       isNew: firstDates[transaction.symbol] === date,
     }));
     return {
-      date, market, external, reinvested, dailyInvest, dailyReinvest,
+      date, market, cost: Object.values(bookValues).reduce((sum, value) => sum + value, 0), external, reinvested, dailyInvest, dailyReinvest,
       splits:marketCaches.filter(cache => symbols.includes(cache.symbol)).flatMap(cache => (cache.splits || []).filter(event => event.date === date).map(event => ({...event, symbol:cache.symbol}))),
       dividends: dividends[date] || 0,
       missing,

@@ -171,7 +171,7 @@ test('chart labels stay readable above markers while the active tooltip stays fo
 
 test('gold chart markers follow the selected data point and keyboard focus', () => {
   const styles = fs.readFileSync(path.resolve(__dirname, '..', 'styles.css'), 'utf8');
-  const source = fs.readFileSync(path.resolve(__dirname, '..', 'app.js'), 'utf8');
+  const source = fs.readFileSync(path.resolve(__dirname, '..', 'js/components/asset-trend-chart.js'), 'utf8');
   const goldInteractionRule = styles.match(/\.trend-event-marker\.new-stock\.is-active \.trend-event-dot,[^{]+\{([^}]+)\}/)?.[1];
 
   assert.ok(goldInteractionRule, 'gold markers should define selected-point and focus-visible feedback');
@@ -191,7 +191,7 @@ test('silver gain milestone grows with the selected data point and keyboard focu
 });
 
 test('mobile asset chart keeps labels readable and details below the plot', () => {
-  const source = fs.readFileSync(path.resolve(__dirname, '..', 'app.js'), 'utf8');
+  const source = fs.readFileSync(path.resolve(__dirname, '..', 'js/components/asset-trend-chart.js'), 'utf8');
   const styles = fs.readFileSync(path.resolve(__dirname, '..', 'styles.css'), 'utf8');
   const mobileStyles = styles.match(/@media \(max-width: 520px\) \{([\s\S]*?)\n\}/)?.[1] || '';
 
@@ -212,7 +212,7 @@ test('mobile asset chart keeps labels readable and details below the plot', () =
 });
 
 test('mobile milestone labels prioritize both categories and one spaced history point', () => {
-  const source = fs.readFileSync(path.resolve(__dirname, '..', 'app.js'), 'utf8');
+  const source = fs.readFileSync(path.resolve(__dirname, '..', 'js/components/asset-trend-chart.js'), 'utf8');
   const functionSource = source.match(/function compactMilestoneLabels[^\n]+/)?.[0];
   const sandbox = { visibleTrendMilestones:milestones => milestones || [] };
   const points = Array.from({length:12},() => ({milestones:[]}));
@@ -227,7 +227,7 @@ test('mobile milestone labels prioritize both categories and one spaced history 
 });
 
 test('mobile navigator reserves its center for moving the selected range', () => {
-  const source = fs.readFileSync(path.resolve(__dirname, '..', 'app.js'), 'utf8');
+  const source = fs.readFileSync(path.resolve(__dirname, '..', 'js/components/asset-trend-chart.js'), 'utf8');
   const functionSource = source.match(/function trendNavigatorDragMode[^\n]+/)?.[0];
   const sandbox = { isCompactTrendChart:() => true };
   vm.runInNewContext(`${functionSource}; result = [
