@@ -36,12 +36,14 @@ export function createCancellableTask() {
 export function createAutosave(write, { delay = 500, onError = () => {} } = {}) {
   let timer = null, pending = null, generation = 0, queue = Promise.resolve();
   let latestValue = {}, latestOnSaved;
+  let inFlight = 0;
   function flush() {
     clearTimeout(timer);
     timer = null;
     if (!pending) return queue;
     const job = pending, version = generation;
     pending = null;
+    inFlight++;
     queue = queue.then(async () => {
       if (version !== generation) return true;
       try {
@@ -57,10 +59,11 @@ export function createAutosave(write, { delay = 500, onError = () => {} } = {}) 
         });
         return false;
       }
-    });
+    }).finally(() => { inFlight--; });
     return queue;
   }
   return {
+    get hasPending() { return Boolean(pending) || inFlight > 0; },
     schedule(value, onSaved) {
       latestValue = { ...latestValue, ...value };
       latestOnSaved = onSaved;

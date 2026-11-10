@@ -17,6 +17,7 @@ import { fetchFinMindData } from './js/services/finmind.js';
 import { confirmDestructive } from './js/components/confirmation.js';
 import { createAssetTrendChart } from './js/components/asset-trend-chart.js';
 import { bindDialogFocus, clearDialogFocus } from './js/components/dialog.js';
+import { bindAccountMenu } from './js/components/account-menu.js';
 import { toast } from './js/components/toast.js';
 import { hashForPage, pageFromHash } from './js/app/router.js';
 import { memoizeLatest } from './js/domain/trend.js';
@@ -47,6 +48,9 @@ let dataMaintenance = false, dataRevision = 0;
 let loadQueue = Promise.resolve();
 let cloudUser = null;
 let accountStore = null;
+let accountMenuCleanup = null;
+let logoutInProgress = false;
+let accountSaveState = { state:'ready', error:null };
 const settingsStore = createSettingsStore({ repository:settingsRepository, initialSettings:settings });
 // The legacy renderer reads this reference; all changes are published by the store.
 settings = settingsStore.getSnapshot();
@@ -69,6 +73,17 @@ function reportOperationError(error, label = '無法儲存變更', retry) {
   // A modal makes the page inert; keep failures and their retry inside it.
   if(notice.parentNode!==container)container.prepend(notice);
   notice.textContent=message;
+  if (cloudUser && error.status === 401) {
+    updateAccountSaveState({ state:'error', error });
+    notice.textContent = '登入已過期。請另開分頁重新登入，再回到此頁重試；目前輸入會保留。';
+    const signIn = document.createElement('a');
+    signIn.href = './';
+    signIn.target = '_blank';
+    signIn.rel = 'noopener';
+    signIn.className = 'secondary';
+    signIn.textContent = '重新登入（另開分頁）';
+    notice.append(signIn);
+  }
   if(retry){
     const button=document.createElement('button');button.type='button';button.className='secondary';button.textContent='重試儲存';
     button.addEventListener('click',async()=>{button.disabled=true;try{await retry();}finally{if(button.isConnected)button.disabled=false;}});
@@ -544,7 +559,7 @@ function navIcon(id) {
   return `<svg viewBox="0 0 24 24" aria-hidden="true">${paths[id]||''}</svg>`;
 }
 function settingsPage() {
-  return `<section class="settings-page"><section class="panel setting"><div class="panel-title"><div><p class="eyebrow">股息現金流</p><h2>股息歸屬方式</h2><p>選擇現金流報表採用的月份計算口徑。</p></div></div><label>股息歸屬依據<select id="basis" data-setting-control><option value="PAYMENT_DATE" ${settings.dividendDateBasis==='PAYMENT_DATE'?'selected':''}>依發放日（建議）</option><option value="EX_DIVIDEND_DATE" ${settings.dividendDateBasis==='EX_DIVIDEND_DATE'?'selected':''}>依除息日</option></select><small>會影響股息現金流的月份歸屬。</small></label></section>${chartSettingsPanel()}<section class="two-col settings-two-col"><section class="panel setting"><div class="panel-title"><div><p class="eyebrow">資料備份與維護</p><h2>備份與還原</h2><p>備份包含交易、退休生活預算、試算條件與所有設定。</p></div></div><div class="setting-actions"><button class="secondary" id="backup">匯出 JSON 備份</button><label class="file-label">匯入 JSON 備份<input id="restore" type="file" accept="application/json,.json" aria-label="匯入 JSON 備份" /></label></div></section><section class="panel setting"><div class="panel-title"><div><p class="eyebrow">市場資料</p><h2>快取維護</h2><p>清除後不影響交易與退休生活預算，可隨時重新同步。</p></div></div><button class="danger subtle setting-action" id="clearMarket">清除市場快取</button></section></section><section class="panel setting-danger-zone settings-danger-card"><div><div><p class="eyebrow">危險區</p><h2>清除全部個人資料</h2><p>${cloudUser ? '這會永久刪除目前登入帳號的交易、退休生活預算及試算設定，並清除這台裝置的市場快取。' : '這會永久刪除目前瀏覽器內的交易、退休生活預算、試算設定與市場快取。'}</p></div><button class="danger setting-action" id="clearAll">清除全部個人資料</button></div></section></section>`;
+  return `<section class="settings-page">${accountSettingsPanel()}<section class="panel setting"><div class="panel-title"><div><p class="eyebrow">股息現金流</p><h2>股息歸屬方式</h2><p>選擇現金流報表採用的月份計算口徑。</p></div></div><label>股息歸屬依據<select id="basis" data-setting-control><option value="PAYMENT_DATE" ${settings.dividendDateBasis==='PAYMENT_DATE'?'selected':''}>依發放日（建議）</option><option value="EX_DIVIDEND_DATE" ${settings.dividendDateBasis==='EX_DIVIDEND_DATE'?'selected':''}>依除息日</option></select><small>會影響股息現金流的月份歸屬。</small></label></section>${chartSettingsPanel()}<section class="two-col settings-two-col"><section class="panel setting"><div class="panel-title"><div><p class="eyebrow">資料備份與維護</p><h2>備份與還原</h2><p>備份包含交易、退休生活預算、試算條件與所有設定。</p></div></div><div class="setting-actions"><button class="secondary" id="backup">匯出 JSON 備份</button><label class="file-label">匯入 JSON 備份<input id="restore" type="file" accept="application/json,.json" aria-label="匯入 JSON 備份" /></label></div></section><section class="panel setting"><div class="panel-title"><div><p class="eyebrow">市場資料</p><h2>快取維護</h2><p>清除後不影響交易與退休生活預算，可隨時重新同步。</p></div></div><button class="danger subtle setting-action" id="clearMarket">清除市場快取</button></section></section><section class="panel setting-danger-zone settings-danger-card"><div><div><p class="eyebrow">危險區</p><h2>清除全部個人資料</h2><p>${cloudUser ? '這會永久刪除目前登入帳號的交易、退休生活預算及試算設定，並清除這台裝置的市場快取。' : '這會永久刪除目前瀏覽器內的交易、退休生活預算、試算設定與市場快取。'}</p></div><button class="danger setting-action" id="clearAll">清除全部個人資料</button></div></section></section>`;
 }
 function navBadge(id, onboarding = getOnboardingState()) {
   if (onboarding.isComplete) return '';
@@ -572,35 +587,77 @@ function facebookCommunityCard(placement) {
 }
 function render() {
   if (isCloudMode() && !cloudUser) return;
+  accountMenuCleanup?.();
+  accountMenuCleanup = null;
   document.body?.classList.remove('mobile-nav-open');
   const m = page === 'overview' ? metrics() : null;
   const onboarding = getOnboardingState();
   root.innerHTML = `<div class="shell"><aside><div class="sidebar-heading"><a class="brand" href="#overview"><span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 18 18 5M9 5h9v9"/></svg></span><b>存股退休</b><em>STOCK JOURNEY</em></a><button class="mobile-menu-toggle" type="button" aria-label="開啟菜單" aria-controls="mobileNavigationPanel" aria-expanded="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg></button></div><div class="mobile-nav-panel" id="mobileNavigationPanel"><div class="mobile-nav-heading"><div><b>頁面導覽</b><span>目前：${PAGE_LABELS[page]}</span></div><button class="mobile-nav-close" type="button" aria-label="關閉菜單"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button></div><nav aria-label="主要導覽">${Object.entries(PAGE_LABELS).map(([id,name])=>`${id==='stock-comparison'?'<p class="nav-section-label">額外工具</p>':''}<button data-page="${id}" class="${page===id?'active':''}" ${page===id?'aria-current="page"':''}><i>${navIcon(id)}</i><span>${name}</span>${navBadge(id, onboarding)}</button>`).join('')}</nav>${facebookCommunityCard('sidebar')}<div class="privacy"><span aria-hidden="true"></span><b>資料只留在這台裝置</b><a href="#settings" data-page="settings">備份與設定</a></div></div><button class="mobile-nav-backdrop" type="button" aria-label="關閉菜單" aria-hidden="true" tabindex="-1"></button></aside><main id="main-content" tabindex="-1">${header()}${facebookCommunityCard('mobile')}${splitDataNotice()}${page === 'overview' ? blueDashboardOverview(m) : page === 'budget' ? livingBudgetPage() : page === 'retirement-calculator' ? retirementCalculatorPage() : page === 'transactions' ? transactionsPage() : page === 'stock-comparison' ? comparisonPage.render() : page === 'market-data' ? marketDataPage() : page === 'settings' ? settingsPage() : dividendsPage()}</main></div>${transactionModal()}${aiImportGuide()}<div id="toast" role="status" aria-live="polite"></div>`;
   bind();
-  if (cloudUser) {
-    const accountPanel = document.createElement('section');
-    accountPanel.className = 'account-panel';
-    accountPanel.setAttribute('aria-label', '登入帳號');
-    const label = document.createElement('span');
-    label.textContent = `已登入：${cloudUser.name}（${cloudUser.email}）`;
-    const logoutButton = document.createElement('button');
-    logoutButton.type = 'button';
-    logoutButton.className = 'secondary';
-    logoutButton.textContent = '儲存並登出';
-    logoutButton.addEventListener('click', uiAction(logoutCloudAccount, '無法登出'));
-    accountPanel.append(label, logoutButton);
-    if (page === 'settings') {
-      const localBackupButton = document.createElement('button');
-      localBackupButton.type = 'button';
-      localBackupButton.className = 'secondary';
-      localBackupButton.textContent = '下載這台裝置的舊本機備份';
-      localBackupButton.addEventListener('click', uiAction(exportLocalAccountBackup));
-      accountPanel.append(localBackupButton);
-    }
-    document.querySelector('#main-content')?.prepend(accountPanel);
-    const privacyLabel = document.querySelector('.privacy b');
-    if (privacyLabel) privacyLabel.textContent = '個人資料儲存在雲端帳號';
+  bindAccountControls();
+}
+
+function accountSaveLabel() {
+  if (accountSaveState.state === 'saving') return '儲存中…';
+  if (accountSaveState.state === 'error') return accountSaveState.error?.status === 401 ? '登入已過期' : '儲存失敗';
+  if (unsavedAccountForm()) return '表單尚未送出';
+  return accountSaveState.state === 'saved' ? '已儲存' : '雲端資料';
+}
+
+function updateAccountSaveState(next) {
+  accountSaveState = next;
+  const status = document.querySelector('#accountSaveStatus');
+  if (status) {
+    status.textContent = accountSaveLabel();
+    status.dataset.state = next.state;
   }
+}
+
+function accountControls() {
+  if (!cloudUser) return '';
+  const name = String(cloudUser.name || '我的帳號');
+  const shortName = name.trim().split(/\s+/)[0] || '帳號';
+  const initial = Array.from(name.trim())[0] || '我';
+  return `<div class="account-controls"><span id="accountSaveStatus" class="account-save-state" data-state="${accountSaveState.state}" role="status" aria-live="polite">${accountSaveLabel()}</span><div class="account-disclosure" id="accountDisclosure"><button type="button" class="account-toggle" id="accountToggle" aria-expanded="false" aria-controls="accountPanel" aria-label="帳號選單，${escapeHtml(name)}"><span class="account-avatar" aria-hidden="true">${escapeHtml(initial)}</span><span class="account-short-name">${escapeHtml(shortName)}</span><svg class="account-chevron" viewBox="0 0 20 20" aria-hidden="true"><path d="m6 8 4 4 4-4"/></svg></button><section class="account-popover" id="accountPanel" aria-label="我的帳號" hidden><div class="account-identity"><b>${escapeHtml(name)}</b><span>${escapeHtml(cloudUser.email)}</span><small>使用 Google 帳號登入</small></div><div class="account-links"><a href="#settings" data-page="settings">設定與備份</a><button type="button" id="accountLogout">登出</button></div></section></div></div>`;
+}
+
+function accountSettingsPanel() {
+  if (!cloudUser) return '';
+  return `<section class="panel setting account-settings"><div class="panel-title"><div><p class="eyebrow">我的帳號</p><h2>${escapeHtml(cloudUser.name)}</h2><p>${escapeHtml(cloudUser.email)}</p></div></div><p>使用 Google 帳號登入。已儲存的交易與退休規劃保存在此帳號；其他裝置重新載入後可取得更新。</p><details class="local-data-migration"><summary>從舊版搬移資料</summary><p>舊本機資料不會自動上傳。先下載備份，再使用下方「匯入 JSON 備份」搬入目前帳號。</p><button type="button" class="secondary" id="localAccountBackup">下載這台裝置的舊本機備份</button></details></section>`;
+}
+
+function accountFormSignature(form) {
+  return JSON.stringify([...form.querySelectorAll('input, select, textarea')]
+    .filter(field => field.type !== 'file')
+    .map(field => [field.name || field.id, ['checkbox', 'radio'].includes(field.type) ? field.checked : field.value]));
+}
+
+function unsavedAccountForm() {
+  return ['#transactionForm', '#budgetItemForm'].map(selector => document.querySelector(selector))
+    .find(form => form?.dataset.accountInitialValue != null && form.dataset.accountInitialValue !== accountFormSignature(form));
+}
+
+function bindAccountControls() {
+  if (!cloudUser) return;
+  accountMenuCleanup = bindAccountMenu({
+    container:document.querySelector('#accountDisclosure'),
+    toggle:document.querySelector('#accountToggle'),
+    panel:document.querySelector('#accountPanel'),
+  });
+  document.querySelector('#accountLogout')?.addEventListener('click', uiAction(logoutCloudAccount, '無法登出'));
+  document.querySelector('#localAccountBackup')?.addEventListener('click', uiAction(exportLocalAccountBackup, '無法匯出本機資料'));
+  for (const selector of ['#transactionForm', '#budgetItemForm']) {
+    const form = document.querySelector(selector);
+    if (form) {
+      form.dataset.accountInitialValue = accountFormSignature(form);
+      const refreshStatus = () => updateAccountSaveState(accountSaveState);
+      form.addEventListener('input', refreshStatus);
+      form.addEventListener('change', refreshStatus);
+    }
+  }
+  updateAccountSaveState(accountSaveState);
+  const privacyLabel = document.querySelector('.privacy b');
+  if (privacyLabel) privacyLabel.textContent = '個人資料儲存在雲端帳號';
 }
 function splitDataNotice() {
   if (['stock-comparison', 'settings', 'budget'].includes(page) || !transactions.length) return '';
@@ -617,11 +674,11 @@ function splitEventDetails(stock) {
   return `<details class="split-events"><summary>分割與面額變更紀錄（${events.length}）</summary><p>股數倍率由參考價校驗推得；行情表保留原始價格，漲跌幅使用調整後的前收盤價。</p><ul>${events.map(event => `<li>${event.date} · ${escapeHtml(event.type)} · 股數 × ${Number(event.ratio.toPrecision(8))}</li>`).join('')}</ul></details>`;
 }
 function header() {
-  if (page === 'stock-comparison') return '<header><div><p class="eyebrow">額外工具</p><h1>股票比較</h1><p>同一段時間，從同一個起點看表現。</p></div></header>';
+  if (page === 'stock-comparison') return `<header class="${cloudUser?'has-account':''}"><div><p class="eyebrow">額外工具</p><h1>股票比較</h1><p>同一段時間，從同一個起點看表現。</p></div><div class="header-actions">${accountControls()}</div></header>`;
   const marketSummary=marketSyncSummary();
   const subtitle=page==='stock-comparison' ? '選擇股票與日期，比較分割調整後的累積漲跌幅或含息總報酬。' : page==='budget' ? '從生活支出建立退休月現金流目標。' : page==='retirement-calculator' ? '結合持股、生活預算與投入計畫，推算退休時間。' : page==='transactions' ? '管理交易紀錄，系統會自動計算持股與成本。' : page==='settings' ? (cloudUser?'顯示方式與雲端帳號資料管理。':'顯示方式與本機資料管理。') : `市場資料：${marketHeaderLabel(marketSummary)}`;
-  const action='';
-  return `<header><div><p class="eyebrow">存股退休</p><h1>${PAGE_LABELS[page]}</h1><p class="market-as-of" role="status" aria-live="polite" aria-atomic="true">${subtitle}</p></div><div class="header-actions">${action}</div></header>`;
+  const action=accountControls();
+  return `<header class="${cloudUser?'has-account':''}"><div><p class="eyebrow">存股退休</p><h1>${PAGE_LABELS[page]}</h1><p class="market-as-of" role="status" aria-live="polite" aria-atomic="true">${subtitle}</p></div><div class="header-actions">${action}</div></header>`;
 }
 function getOnboardingState(items = budgetItems, txs = transactions) {
   const budgetDone = items.some(item => item.isActive !== false && Number(item.occurrenceAmount) > 0);
@@ -646,7 +703,7 @@ function retirementBirthMonthIsConfirmed() {
   return settings.retirementBirthMonthConfirmed===true&&isYearMonth(settings.retirementBirthMonth);
 }
 function overviewBirthMonthPrompt() {
-  return `<section class="overview-birth-card" aria-labelledby="overview-birth-title"><div class="overview-birth-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="3"/><path d="M6 20v-2a6 6 0 0 1 12 0v2M5 4h14v16H5z"/></svg></div><div class="overview-birth-copy"><p class="eyebrow">完成退休試算</p><h2 id="overview-birth-title">還差一步，就能算出退休時間</h2><p>請輸入出生年月，系統才能換算目前年齡與預估退休年月。</p></div><form id="overviewBirthMonthForm" class="overview-birth-form" novalidate><label for="overviewBirthMonth">出生年月</label><div><input id="overviewBirthMonth" class="birth-month-input" name="birthMonth" type="month" min="1900-01" max="${currentYearMonth()}" required aria-describedby="overviewBirthHint overviewBirthError"></div><small id="overviewBirthHint">選擇出生年月後會自動開始試算；資料只留在這台裝置。</small><small id="overviewBirthSaveStatus" role="status">選擇後會自動開始試算。</small><small id="overviewBirthError" class="field-error" role="alert"></small></form></section>`;
+  return `<section class="overview-birth-card" aria-labelledby="overview-birth-title"><div class="overview-birth-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="3"/><path d="M6 20v-2a6 6 0 0 1 12 0v2M5 4h14v16H5z"/></svg></div><div class="overview-birth-copy"><p class="eyebrow">完成退休試算</p><h2 id="overview-birth-title">還差一步，就能算出退休時間</h2><p>請輸入出生年月，系統才能換算目前年齡與預估退休年月。</p></div><form id="overviewBirthMonthForm" class="overview-birth-form" novalidate><label for="overviewBirthMonth">出生年月</label><div><input id="overviewBirthMonth" class="birth-month-input" name="birthMonth" type="month" min="1900-01" max="${currentYearMonth()}" required aria-describedby="overviewBirthHint overviewBirthError"></div><small id="overviewBirthHint">選擇出生年月後會自動開始試算；${cloudUser?'資料會儲存至你的雲端帳號。':'資料只留在這台裝置。'}</small><small id="overviewBirthSaveStatus" role="status">選擇後會自動開始試算。</small><small id="overviewBirthError" class="field-error" role="alert"></small></form></section>`;
 }
 function overviewRetirementSnapshot() {
   if (!retirementBirthMonthIsConfirmed()) return overviewBirthMonthPrompt();
@@ -1419,6 +1476,7 @@ function bindRetirementCalculator() {
   addProjectionMethodInfo(form);
   const persist=values=>{
     const status=document.querySelector('#projectionSaveStatus');
+    if (cloudUser) updateAccountSaveState({ state:'saving', error:null });
     projectionAutosave.schedule({retirementBirthMonth:values.birthMonth,retirementBirthMonthConfirmed:true,retirementCurrentAge:values.currentAge,retirementOtherMonthlyIncome:values.otherMonthlyIncome,retirementMonthlyContribution:values.monthlyContribution,retirementAnnualReturnRate:values.annualReturnRate*100,retirementInflationRate:values.inflationRate*100,retirementWithdrawalRate:values.withdrawalRate*100,retirementSaleWithdrawalRateVersion:1},()=>{if(status?.isConnected)status.textContent='已自動儲存';});
   };
   const update=()=>{
@@ -1568,6 +1626,7 @@ function bind() {
   const scheduleSettingsSave = (immediate=false) => {
     if(dataMaintenance)return;
     const snapshot=captureChartSettings();if(!snapshot)return;
+    if (cloudUser) updateAccountSaveState({ state:'saving', error:null });
     const status=document.querySelector('#settingsSaveStatus');
     if(status)status.textContent='正在自動儲存…';
     chartSettingsAutosave.schedule(snapshot,()=>{if(status?.isConnected)status.textContent='已自動儲存';});
@@ -1686,13 +1745,22 @@ async function exportLocalAccountBackup() {
 function startCloudSession() {
   if (cloudSessionStart) return cloudSessionStart;
   cloudSessionStart = (async () => {
-    root.innerHTML = '<section class="cloud-login panel"><h1>存股退休</h1><p role="status" id="loginStatus">正在確認登入狀態…</p><div id="googleSignIn"></div><button type="button" class="secondary" id="localBackup">下載舊本機備份</button><p>登入後，交易與退休規劃會儲存至你的雲端帳號。舊資料不會自動上傳；可先下載備份，再於設定頁匯入。</p><button type="button" class="secondary" id="retryLogin">重新整理</button></section>';
+    root.innerHTML = '<section class="cloud-login panel"><p class="eyebrow">STOCK JOURNEY</p><h1>存股退休</h1><p class="cloud-login-intro">把投資紀錄與退休規劃，留在同一個帳號。</p><p role="status" id="loginStatus">正在確認登入狀態…</p><div id="googleSignIn"></div><p class="cloud-login-note">使用 Google 帳號登入，在不同裝置查看已儲存的資料。</p><button type="button" class="secondary" id="retryLogin" hidden>重新整理後重試</button><details class="local-data-migration"><summary>從舊版搬移資料</summary><p>舊本機資料不會自動上傳。先下載備份，登入後再到「設定與備份」匯入。</p><button type="button" class="secondary" id="localBackup">下載舊本機備份</button></details></section>';
     document.querySelector('#localBackup')?.addEventListener('click', uiAction(exportLocalAccountBackup, '無法匯出本機資料'));
     document.querySelector('#retryLogin')?.addEventListener('click', () => location.reload());
     const status = document.querySelector('#loginStatus');
+    const showLoginError = error => {
+      status.textContent = error.message;
+      status.setAttribute('role', 'alert');
+      const retry = document.querySelector('#retryLogin');
+      if (retry) retry.hidden = false;
+    };
     const activate = async user => {
       cloudUser = user;
-      accountStore = createCloudDataStore({ request:(path, options) => cloudRequest(path, { ...options, accountId:user.id }) });
+      accountStore = createCloudDataStore({
+        request:(path, options) => cloudRequest(path, { ...options, accountId:user.id }),
+        onWriteState:updateAccountSaveState,
+      });
       useCloudDataStore(accountStore);
       await load();
     };
@@ -1718,33 +1786,51 @@ function startCloudSession() {
             const session = await cloudRequest('/api/login', { method:'POST', body:{ credential:result.credential } });
             await activate(session.user);
           } catch (error) {
-            status.textContent = error.message;
-            status.setAttribute('role', 'alert');
+            showLoginError(error);
             loggingIn = false;
           }
         },
       });
       globalThis.google.accounts.id.renderButton(document.querySelector('#googleSignIn'), { theme:'outline', size:'large', text:'signin_with' });
     } catch (error) {
-      status.textContent = error.message;
-      status.setAttribute('role', 'alert');
+      showLoginError(error);
     }
   })();
   return cloudSessionStart;
 }
 
 async function logoutCloudAccount() {
-  if (!cloudUser || dataMaintenance) return;
-  dataMaintenance = true;
-  clearTimeout(marketSyncTimer);
+  if (!cloudUser || dataMaintenance || logoutInProgress) return;
+  logoutInProgress = true;
+  let started = false;
+  const shell = document.querySelector('.shell');
+  const previousInert = shell?.inert;
+  const logoutButton = document.querySelector('#accountLogout');
   try {
+    const draft = unsavedAccountForm();
+    if (draft && !await confirmDestructive({
+      title:'有尚未儲存的內容',
+      description:'交易與生活費表單需要按下儲存才會送出。登出將捨棄這些尚未送出的修改；已儲存的資料會保留。',
+      cancelLabel:'返回編輯', confirmLabel:'捨棄並登出',
+    })) {
+      draft.querySelector('input:not([disabled]), select:not([disabled]), textarea:not([disabled])')?.focus();
+      return;
+    }
+    started = true;
+    dataMaintenance = true;
+    dataRevision++;
+    if (shell) shell.inert = true;
+    clearTimeout(marketSyncTimer);
+    const pending = chartSettingsAutosave.hasPending || projectionAutosave.hasPending || accountSaveState.state === 'saving';
+    if (logoutButton) logoutButton.textContent = pending ? '正在儲存設定…' : '正在登出…';
     await marketTask.cancel();
     await comparisonPage.reset();
     await loadQueue;
     const saved = await Promise.all([chartSettingsAutosave.flush(), projectionAutosave.flush()]);
-    if (saved.includes(false)) throw Error('設定尚未儲存，請重試後再登出');
+    if (saved.includes(false)) throw Object.assign(Error('設定尚未儲存，請重試後再登出'), { status:accountSaveState.error?.status });
     await settingsStore.whenIdle();
     await accountStore.whenIdle();
+    if (logoutButton) logoutButton.textContent = '正在登出…';
     await cloudRequest('/api/logout', { method:'POST', body:{}, accountId:cloudUser.id });
     overviewTrend.dispose();
     holdingTrend?.dispose();
@@ -1753,12 +1839,21 @@ async function logoutCloudAccount() {
     budgetItems = [];
     settingsStore.replace(createDefaultSettings());
     clearUndoHistory();
+    accountMenuCleanup?.();
+    accountMenuCleanup = null;
     root.innerHTML = '<p role="status">已登出，正在重新載入…</p>';
     location.reload();
   } catch (error) {
-    dataMaintenance = false;
-    scheduleMarketSyncCheck();
+    if (started) {
+      dataMaintenance = false;
+      if (shell?.isConnected) shell.inert = Boolean(previousInert);
+      updateAccountSaveState({ state:'error', error });
+      scheduleMarketSyncCheck();
+    }
     throw error;
+  } finally {
+    logoutInProgress = false;
+    if (logoutButton?.isConnected) logoutButton.textContent = '登出';
   }
 }
 

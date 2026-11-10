@@ -163,3 +163,11 @@ Next.js 靜態匯出可繼續使用靜態主機，但應規劃透過網址開啟
 `backend/server/api.mjs` 管理 HTTP、Origin／session／帳號驗證及 D1；`google-auth.mjs` 使用 Web Crypto 驗證 Google ID token。後端只匯入 frontend 內不依賴瀏覽器的既有 domain 驗證及常數，不匯入 app.js 或 UI。若未來獨立發布前後端，可再把這些純核心移到 shared，目前避免複製規則。D1 個人資料為 512 KiB 內的 versioned JSON 快照，單次 SQL compare-and-swap 確保清除／還原原子性；目前不是逐筆 SQL 表，也不提供離線合併。
 
 `tests/cloud-platform.test.js` 以記憶體 SQLite 執行實際遷移 SQL 與 API 使用的查詢，透過 D1 介面轉接測試帳號隔離、版本衝突、原子替換、session 撤銷與過期；Google 簽章使用本機 RSA 金鑰實際簽署及驗證。這些仍不等同遠端 D1 或真實 Google 瀏覽器驗收。
+
+### 帳號選單與登出
+
+`frontend/js/components/account-menu.js` 只處理 disclosure 的開關、外部點擊、Tab 離開與 Escape 焦點返回；每次重新渲染前解除舊 document 監聽。選單使用原生按鈕與連結，不使用需要方向鍵模型的 ARIA menu。完整帳號資訊放在展開面板與設定頁，手機入口只保留頭像。
+
+`createCloudDataStore({ request, onWriteState })` 的選用通知提供 `saving`／`saved`／`error` 與錯誤物件，必須等所有排隊寫入結束才回報成功；通知本身不得改變儲存成敗。`createAutosave().hasPending` 表示待排程或執行中的設定寫入，供登出等待提示使用。這些狀態只代表本頁送出的儲存工作，不宣稱所有裝置即時同步；尚未提交的交易／生活費表單另顯示「表單尚未送出」。
+
+登出先比較交易／生活費表單的初始欄位與目前值，有修改才確認「返回編輯／捨棄並登出」。確認前不取消或清空草稿；確認後阻止新操作、取消同步、等待載入及寫入、flush 設定，全部成功才撤銷 session。儲存失敗保持登入並恢復操作。401 提供另開分頁重新登入的入口，保留原頁輸入，不自動重新整理。既有本機 HTML 不顯示帳號選單。

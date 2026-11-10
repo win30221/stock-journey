@@ -1,11 +1,21 @@
 // A page owns one account snapshot. A revision conflict requires a reload;
 // retrying never silently overwrites another device's changes.
-export function createCloudDataStore({ request }) {
+export function createCloudDataStore({ request, onWriteState = () => {} }) {
   let snapshot = null;
   let revision = null;
   let initialRead = null;
   let writes = Promise.resolve();
+  let pendingWrites = 0;
+  let writeError = null;
   const copy = value => JSON.parse(JSON.stringify(value));
+
+  function publishWriteState() {
+    try {
+      onWriteState({ state:pendingWrites ? 'saving' : writeError ? 'error' : 'saved', error:writeError });
+    } catch (error) {
+      console.error('Cloud write status listener failed:', error);
+    }
+  }
 
   async function read() {
     if (!initialRead) {
@@ -21,6 +31,9 @@ export function createCloudDataStore({ request }) {
   }
 
   function mutate(change) {
+    if (!pendingWrites) writeError = null;
+    pendingWrites++;
+    publishWriteState();
     const write = writes.then(async () => {
       await read();
       const next = copy(snapshot);
@@ -29,8 +42,15 @@ export function createCloudDataStore({ request }) {
       snapshot = next;
       revision = result.revision;
     });
-    writes = write.catch(() => {});
-    return write;
+    const observed = write.catch(error => {
+      writeError = error;
+      throw error;
+    }).finally(() => {
+      pendingWrites--;
+      publishWriteState();
+    });
+    writes = observed.catch(() => {});
+    return observed;
   }
 
   function repository(name) {

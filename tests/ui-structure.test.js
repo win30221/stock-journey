@@ -381,7 +381,7 @@ test('retirement results require an explicitly confirmed birth month at the mome
   assert.match(source, /function overviewBirthMonthPrompt\(\)/);
   assert.match(source, /id="overviewBirthMonthForm"/);
   assert.match(source, /id="overviewBirthMonth" class="birth-month-input"/);
-  assert.match(source, /選擇出生年月後會自動開始試算；資料只留在這台裝置/);
+  assert.match(source, /選擇出生年月後會自動開始試算/);
   assert.match(source, /id="overviewBirthSaveStatus" role="status">選擇後會自動開始試算/);
   assert.match(source, /form\.addEventListener\('input',\(\)=>void update\(\)\)/);
   assert.doesNotMatch(source, /儲存並查看試算/);

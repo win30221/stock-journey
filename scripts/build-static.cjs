@@ -24,6 +24,7 @@ const sourceFiles = [
   'js/repositories/cloud.js',
   'js/services/finmind.js',
   'js/components/dialog.js',
+  'js/components/account-menu.js',
   'js/components/asset-trend-chart.js',
   'js/components/confirmation.js',
   'js/components/toast.js',
