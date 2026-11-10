@@ -2,7 +2,11 @@
 
 本文件適用 `codex/online-platform` 分支。`main` 保留既有本機版本；連線版的 Pages 正式部署分支為 `codex/online-platform`。
 
-2026-11-10 已建立獨立 Pages 專案 `stock-journey-online`，並以 CLI 部署至 https://stock-journey-online.pages.dev/。D1 同名資料庫已初始化，正式環境 `DB` 綁定已完成。Google 登入尚待完成品牌政策確認、建立 Client ID 及設定環境變數；完成前 API 會回傳 503，不會回退本機模式。此專案目前採手動 CLI 部署，尚未連接 GitHub 自動部署；原有 `stock-journey` 專案未變更。
+2026-11-10 已建立獨立 Pages 專案 `stock-journey-online`，並以 CLI 部署至 https://stock-journey-online.pages.dev/。D1 同名資料庫已初始化，正式環境 `DB` 綁定已完成。Google Cloud 專案為 `stock-journey-online`，品牌與網頁 OAuth 用戶端已建立，授權來源僅為正式網站 origin；公開 Client ID 已設入 Pages 正式環境的 `GOOGLE_CLIENT_ID`，未使用 Client Secret。此專案目前採手動 CLI 部署，尚未連接 GitHub 自動部署；原有 `stock-journey` 專案未變更。
+
+部署後已確認首頁及 `/api/config` 回傳 200，未登入的 `/api/session`、`/api/data` 回傳 401，Google 登入按鈕與帳號選擇畫面可正常顯示。自動化工具無法點選 Google 帳號彈出視窗，實際登入、登入後 D1 讀寫及登出尚待手動驗收，不宣稱已完成。
+
+Google Auth Platform 目前保留「測試」發布狀態。本版 Google Identity Services 僅使用 `openid`、`email`、`profile` 基本身分範圍，依 [Google 官方基本身分範圍例外規則](https://developers.google.com/identity/protocols/oauth2/production-readiness/overview)，使用者不需列入測試名單；若未來增加 Gmail、Drive 等範圍，須重新檢查測試使用者、發布及驗證要求。
 
 ## 目錄與部署邊界
 
