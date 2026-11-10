@@ -8,6 +8,8 @@
 
 Google Auth Platform 目前保留「測試」發布狀態。本版 Google Identity Services 僅使用 `openid`、`email`、`profile` 基本身分範圍，依 [Google 官方基本身分範圍例外規則](https://developers.google.com/identity/protocols/oauth2/production-readiness/overview)，使用者不需列入測試名單；若未來增加 Gmail、Drive 等範圍，須重新檢查測試使用者、發布及驗證要求。
 
+帳號 UI 更新已從 `codex/online-platform` 的 `d332966` 部署，部署網址為 https://2db455fb.stock-journey-online.pages.dev/，正式網址不變。250 項自動測試通過；實際 Chrome 驗收包含正式站的桌面／390px 手機帳號入口與選單、44×44 手機按鈕及無水平溢出。本機隔離預覽另驗證 Escape／Tab、生活費草稿登出確認、返回編輯保留內容、無草稿直接登出及登入頁錯誤重試；本機預覽使用測試帳號與記憶體 API，不代表正式環境的交易／還原／多帳號驗收。401 與儲存失敗阻止登出等情境由自動測試驗證；未登出正在使用的正式帳號。
+
 ## 目錄與部署邊界
 
 - `frontend/`：原生 JavaScript 前端、純計算核心與本機模式。雙擊 `frontend/index.html` 可使用原本的本機儲存。
