@@ -17,7 +17,7 @@ git diff --check
 
 ## Cloudflare Pages 部署
 
-執行 `node scripts/build-pages.cjs`，再以 `dist/` 作為部署目錄；僅發布 HTML、CSS 與最新 bundle，不包含個人交易 CSV。建置會清空重建 `dist/`，請勿在其中存放資料。直接開啟根目錄 HTML 的方式保持不變。
+執行 `node scripts/build-pages.cjs`，再以 `dist/` 作為部署目錄；僅發布 HTML、CSS、最新 bundle 與頁面提供下載的公開範例 CSV，不複製其他個人檔案。建置會清空重建 `dist/`，請勿在其中存放資料。直接開啟根目錄 HTML 的方式保持不變。
 
 建立專案、自動部署與資料搬移步驟見 [Cloudflare Pages 部署指南](docs/cloudflare-pages.md)。
 

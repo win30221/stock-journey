@@ -29,7 +29,7 @@
 node scripts/build-pages.cjs
 ```
 
-只上傳 `dist/`，不要上傳整個儲存庫，以免公開交易 CSV。產物只含 `index.html`、`styles.css`、`app.bundle.js`，每次建置會清空重建。根目錄 bundle 不會被此指令修改。
+只上傳 `dist/`，不要上傳整個儲存庫，以免公開其他個人檔案。產物只含 `index.html`、`styles.css`、`app.bundle.js` 與頁面提供下載的公開範例 `my-stock-transactions.csv`，每次建置會清空重建。根目錄 bundle 不會被此指令修改。請勿將此公開範例替換成自己的真實交易，個人資料應透過網頁匯入並保存在瀏覽器。
 
 不使用 Git 整合時，可在 Pages 選 **Drag and drop your files** 上傳 `dist/`。Direct Upload 專案日後不能直接改成 Git 整合，需要另建專案。
 

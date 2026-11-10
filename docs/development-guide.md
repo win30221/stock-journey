@@ -114,7 +114,7 @@ Next.js 靜態匯出可繼續使用靜態主機，但應規劃透過網址開啟
 
 ## Cloudflare Pages 交付
 
-`node scripts/build-pages.cjs` 沿用 `build-static.cjs` 的 `buildBundle()`，在 `dist/` 產生最新腳本並複製 HTML／CSS，不修改根目錄產物。僅允許發布這三個執行時檔案，避免公開個人 CSV、測試與文件；每次建置清空重建 `dist/`。新增圖片等執行時資源時，須同步更新 Pages 發布清單。Git 整合的建置命令與 `dist` 輸出目錄須於控制台設定，不新增影響既有 Workers 的 Wrangler 設定。詳見 [部署指南](cloudflare-pages.md)。
+`node scripts/build-pages.cjs` 沿用 `build-static.cjs` 的 `buildBundle()`，在 `dist/` 產生最新腳本並複製 HTML／CSS 與頁面提供下載的公開範例 `my-stock-transactions.csv`，不修改根目錄產物。僅允許發布這四個檔案，避免公開其他個人 CSV、測試與文件；每次建置清空重建 `dist/`。新增圖片等執行時資源時，須同步更新 Pages 發布清單。Git 整合的建置命令與 `dist` 輸出目錄須於控制台設定，不新增影響既有 Workers 的 Wrangler 設定。詳見 [部署指南](cloudflare-pages.md)。
 
 ## 驗證方式
 
