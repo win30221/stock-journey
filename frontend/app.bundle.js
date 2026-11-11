@@ -3137,7 +3137,7 @@ function accountControls() {
 
 function accountSettingsPanel() {
   if (!cloudUser) return '';
-  return `<section class="panel setting account-settings"><div class="panel-title"><div><p class="eyebrow">我的帳號</p><h2>${escapeHtml(cloudUser.name)}</h2><p>${escapeHtml(cloudUser.email)}</p></div></div><p>使用 Google 帳號登入。已儲存的交易與退休規劃保存在此帳號；其他裝置重新載入後可取得更新。</p><details class="local-data-migration"><summary>從舊版搬移資料</summary><p>舊本機資料不會自動上傳。先下載備份，再使用下方「匯入 JSON 備份」搬入目前帳號。</p><button type="button" class="secondary" id="localAccountBackup">下載這台裝置的舊本機備份</button></details></section>`;
+  return `<section class="panel setting account-settings"><div class="panel-title"><div><p class="eyebrow">我的帳號</p><h2>${escapeHtml(cloudUser.name)}</h2><p>${escapeHtml(cloudUser.email)}</p></div></div><p>使用 Google 帳號登入。已儲存的交易與退休規劃保存在此帳號；其他裝置重新載入後可取得更新。</p></section>`;
 }
 
 function accountFormSignature(form) {
@@ -3159,7 +3159,6 @@ function bindAccountControls() {
     panel:document.querySelector('#accountPanel'),
   });
   document.querySelector('#accountLogout')?.addEventListener('click', uiAction(logoutCloudAccount, '無法登出'));
-  document.querySelector('#localAccountBackup')?.addEventListener('click', uiAction(exportLocalAccountBackup, '無法匯出本機資料'));
   for (const selector of ['#transactionForm', '#budgetItemForm']) {
     const form = document.querySelector(selector);
     if (form) {
