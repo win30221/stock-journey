@@ -3115,7 +3115,7 @@ function accountSaveLabel() {
   if (accountSaveState.state === 'saving') return '儲存中…';
   if (accountSaveState.state === 'error') return accountSaveState.error?.status === 401 ? '登入已過期' : '儲存失敗';
   if (unsavedAccountForm()) return '表單尚未送出';
-  return accountSaveState.state === 'saved' ? '已儲存' : '雲端資料';
+  return accountSaveState.state === 'saved' ? '已儲存' : '';
 }
 
 function updateAccountSaveState(next) {
